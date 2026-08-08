@@ -7,7 +7,9 @@ import {
   IconPlus,
   IconFolder,
   IconDownload,
-  IconSearch
+  IconSearch,
+  IconHistory,
+  IconTrash
 } from '@tabler/icons';
 import { ipcRenderer } from 'utils/ipc';
 import { openCollection } from 'providers/ReduxStore/slices/collections/actions';
@@ -16,6 +18,8 @@ import ActionIcon from 'ui/ActionIcon';
 import Collection from './Collections/Collection';
 import CollectionSearch from './Collections/CollectionSearch/index';
 import { SidebarAccordionProvider } from './SidebarAccordionContext';
+import SidebarSection from './SidebarSection';
+import History from './History';
 
 const StyledVSSidebar = styled.div`
   flex: 1;
@@ -27,34 +31,14 @@ const StyledVSSidebar = styled.div`
   background-color: var(--vscode-sideBar-background, ${(props) => props.theme?.sidebar?.bg || '#1e1e1e'});
   color: var(--vscode-sideBar-foreground, var(--vscode-foreground, ${(props) => props.theme?.sidebar?.color || '#333333'}));
 
-  .sidebar-header {
+  .sidebar-top-actions {
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: space-between;
-    padding: 8px 10px;
+    justify-content: flex-end;
+    padding: 4px 6px;
     border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, ${(props) => props.theme?.sidebar?.collection?.item?.hoverBg || '#2d2d2d'});
     flex-shrink: 0;
-  }
-
-  .sidebar-header-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .sidebar-header-right {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .sidebar-title {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-foreground, ${(props) => props.theme?.sidebar?.color || '#333333'}));
   }
 
   .sidebar-content {
@@ -63,13 +47,6 @@ const StyledVSSidebar = styled.div`
     flex: 1;
     min-height: 0;
     overflow: hidden;
-  }
-
-  .collections-container {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
   }
 
   .empty-state {
@@ -181,6 +158,10 @@ const VSSidebar = () => {
     ipcRenderer.send('sidebar:open-import-collection');
   };
 
+  const handleClearHistory = () => {
+    ipcRenderer.invoke('history:clear').catch(() => {});
+  };
+
   const handleToggleSearch = () => {
     setShowSearch((prev) => !prev);
     if (showSearch) {
@@ -211,68 +192,78 @@ const VSSidebar = () => {
 
   const hasCollections = workspaceCollections && workspaceCollections.length > 0;
 
+  const collectionsSectionActions = (
+    <>
+      <ActionIcon onClick={handleToggleSearch} label="Search requests">
+        <IconSearch size={14} stroke={1.5} aria-hidden="true" />
+      </ActionIcon>
+
+      <MenuDropdown
+        data-testid="collections-header-add-menu"
+        items={addDropdownItems}
+        placement="bottom-end"
+      >
+        <ActionIcon label="Add new collection">
+          <IconPlus size={14} stroke={1.5} aria-hidden="true" />
+        </ActionIcon>
+      </MenuDropdown>
+    </>
+  );
+
+  const historySectionActions = (
+    <ActionIcon onClick={handleClearHistory} label="Clear history">
+      <IconTrash size={14} stroke={1.5} aria-hidden="true" />
+    </ActionIcon>
+  );
+
   return (
-    <SidebarAccordionProvider defaultExpanded={[]}>
+    <SidebarAccordionProvider defaultExpanded={['collections', 'history']}>
       <StyledVSSidebar>
-        <div className="sidebar-header">
-        <div className="sidebar-header-left">
-          <span className="sidebar-title">Collections</span>
-        </div>
-        <div className="sidebar-header-right">
+        <div className="sidebar-top-actions">
           <ActionIcon onClick={handleOpenGlobalEnvironments} label="Global Environments">
             <IconWorld size={14} stroke={1.5} aria-hidden="true" />
           </ActionIcon>
-
-          <ActionIcon onClick={handleToggleSearch} label="Search requests">
-            <IconSearch size={14} stroke={1.5} aria-hidden="true" />
-          </ActionIcon>
-
-          <MenuDropdown
-            data-testid="collections-header-add-menu"
-            items={addDropdownItems}
-            placement="bottom-end"
-          >
-            <ActionIcon label="Add new collection">
-              <IconPlus size={14} stroke={1.5} aria-hidden="true" />
-            </ActionIcon>
-          </MenuDropdown>
-
         </div>
-      </div>
 
-      <div className="sidebar-content">
-        {showSearch && (
-          <CollectionSearch searchText={searchText} setSearchText={setSearchText} />
-        )}
+        <div className="sidebar-content">
+          <SidebarSection id="collections" title="Collections" icon={IconFolder} actions={collectionsSectionActions}>
+            {showSearch && (
+              <CollectionSearch searchText={searchText} setSearchText={setSearchText} />
+            )}
 
-        <div className="collections-container">
-          {isInitializing ? null : hasCollections ? (
-            workspaceCollections.map((c: any) => (
-              <Collection searchText={searchText} collection={c} key={c.uid} />
-            ))
-          ) : (
-            <div className="empty-state">
-              <div className="empty-message">No collections found.</div>
-              <div className="empty-actions">
-                <button
-                  className="empty-action-btn primary"
-                  onClick={handleCreateCollection}
-                >
-                  <IconPlus size={14} strokeWidth={1.5} />
-                  Create Collection
-                </button>
-                <button
-                  className="empty-action-btn secondary"
-                  onClick={handleOpenCollection}
-                >
-                  <IconFolder size={14} strokeWidth={1.5} />
-                  Open Collection
-                </button>
-              </div>
+            <div className="collections-container">
+              {isInitializing ? null : hasCollections ? (
+                workspaceCollections.map((c: any) => (
+                  <Collection searchText={searchText} collection={c} key={c.uid} />
+                ))
+              ) : (
+                <div className="empty-state">
+                  <div className="empty-message">No collections found.</div>
+                  <div className="empty-actions">
+                    <button
+                      className="empty-action-btn primary"
+                      onClick={handleCreateCollection}
+                    >
+                      <IconPlus size={14} strokeWidth={1.5} />
+                      Create Collection
+                    </button>
+                    <button
+                      className="empty-action-btn secondary"
+                      onClick={handleOpenCollection}
+                    >
+                      <IconFolder size={14} strokeWidth={1.5} />
+                      Open Collection
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
+          </SidebarSection>
+
+          <SidebarSection id="history" title="History" icon={IconHistory} actions={historySectionActions}>
+            <History />
+          </SidebarSection>
         </div>
-      </div>
 
       </StyledVSSidebar>
     </SidebarAccordionProvider>

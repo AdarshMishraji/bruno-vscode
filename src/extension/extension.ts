@@ -17,6 +17,7 @@ import { setExtensionContext as setCollectionSecurityContext } from './store/col
 import { setExtensionContext as setUiStateContext } from './store/ui-state-snapshot';
 import { setExtensionContext as setCookiesContext, cookiesStore } from './store/cookies';
 import { setExtensionContext as setOAuth2Context } from './store/oauth2';
+import { setExtensionContext as setRequestHistoryContext } from './store/request-history';
 
 import registerPreferencesIpc from './ipc/preferences';
 import registerCollectionIpc, { setSidebarWebviewGetter } from './ipc/collection';
@@ -25,6 +26,7 @@ import registerGlobalEnvironmentsIpc from './ipc/global-environments';
 import registerNetworkIpc from './ipc/network/index';
 import registerWorkspaceIpc from './ipc/workspace';
 import registerSimplePanelIpc from './ipc/simple-panel';
+import { registerRequestHistoryIpc } from './ipc/request-history';
 import { registerCoreHandlers } from './ipc/handlers';
 
 import collectionWatcher, { setMessageSender as setWatcherMessageSender } from './app/collection-watcher';
@@ -55,6 +57,7 @@ function initializeStores(context: vscode.ExtensionContext): void {
   setUiStateContext(context);
   setCookiesContext(context);
   setOAuth2Context(context);
+  setRequestHistoryContext(context);
 }
 
 function registerIpcHandlers(): void {
@@ -64,6 +67,7 @@ function registerIpcHandlers(): void {
   registerFilesystemIpc();
   registerGlobalEnvironmentsIpc();
   registerNetworkIpc();
+  registerRequestHistoryIpc();
   registerDirtyStateHandlers();
 
   registerWorkspaceIpc({

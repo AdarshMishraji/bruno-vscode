@@ -2,11 +2,12 @@
 // @ts-expect-error - WsClient may not have type definitions
 import { WsClient } from '@usebruno/requests';
 import { cloneDeep, each, get } from 'lodash';
-import { registerHandler, sendToWebview } from '../handlers';
+import { registerHandler, sendToWebview, broadcastToAllWebviews } from '../handlers';
 import { interpolateVars } from './interpolate-vars';
 import { getEnvVars, getTreePathFromCollectionToItem, mergeHeaders, mergeScripts, mergeVars, mergeAuth } from '../../utils/collection';
 import { getCertsAndProxyConfig } from './cert-utils';
 import { setAuthHeaders } from './prepare-request';
+import { requestHistoryStore, buildHistoryItemSnapshot } from '../../store/request-history';
 
 interface WsMessage {
   content: string;
@@ -181,8 +182,50 @@ const prepareWsRequest = async (
 
 let wsClient: WsClient | null = null;
 
+// Tracks in-flight WS connections so terminal lifecycle events (emitted by
+// WsClient itself, not this file) can be correlated back to the history
+// entry created when the connection was initiated.
+const activeWsHistory = new Map<string, string>(); // `${collectionUid}:${itemUid}` -> historyEntryId
+
+const trackWsTerminalEvent = (eventName: string, args: unknown[]): void => {
+  if (eventName !== 'main:ws:open' && eventName !== 'main:ws:close' && eventName !== 'main:ws:error') {
+    return;
+  }
+
+  const [requestId, collectionUid, payload] = args as [string, string, Record<string, unknown> | undefined];
+  if (typeof requestId !== 'string' || typeof collectionUid !== 'string') {
+    return;
+  }
+
+  const key = `${collectionUid}:${requestId}`;
+  const entryId = activeWsHistory.get(key);
+  if (!entryId) return;
+
+  const entry = requestHistoryStore.getEntry(entryId);
+  const patch: { statusText: string; duration?: number; error?: string } = { statusText: 'Connected' };
+
+  if (eventName === 'main:ws:close') {
+    patch.statusText = 'Closed';
+    if (entry) patch.duration = Date.now() - entry.timestamp;
+    activeWsHistory.delete(key);
+  } else if (eventName === 'main:ws:error') {
+    patch.statusText = 'Error';
+    patch.error = (payload?.error as string) || 'WebSocket error';
+    if (entry) patch.duration = Date.now() - entry.timestamp;
+    activeWsHistory.delete(key);
+  }
+
+  requestHistoryStore.updateEntry(entryId, patch);
+  broadcastToAllWebviews('history:changed');
+};
+
 const createSendEvent = () => {
   return (eventName: string, ...args: unknown[]) => {
+    try {
+      trackWsTerminalEvent(eventName, args);
+    } catch (err) {
+      console.error('Failed to track WebSocket request history:', err);
+    }
     sendToWebview(eventName, ...args);
   };
 };
@@ -214,6 +257,27 @@ const registerWsEventHandlers = (): void => {
         body: preparedRequest.body,
         timestamp: Date.now()
       };
+
+      try {
+        const historyEntry = requestHistoryStore.addEntry({
+          kind: 'ws',
+          method: 'WS',
+          url: preparedRequest.url,
+          itemUid: request.uid,
+          itemName: (requestCopy as unknown as { name?: string }).name || 'Untitled',
+          itemType: (requestCopy as unknown as { type?: string }).type || 'ws-request',
+          collectionUid: collection.uid,
+          collectionPath: collection.pathname,
+          collectionName: (collection as unknown as { name?: string }).name || '',
+          environmentName: (environment as unknown as { name?: string } | null)?.name,
+          statusText: 'Connecting',
+          item: buildHistoryItemSnapshot(requestCopy as unknown as Record<string, unknown>)
+        });
+        activeWsHistory.set(`${collection.uid}:${request.uid}`, historyEntry.id);
+        broadcastToAllWebviews('history:changed');
+      } catch (historyError) {
+        console.error('Failed to record WebSocket request history:', historyError);
+      }
 
       if (!connectOnly && wsClient) {
         const hasMessages = preparedRequest.body?.ws?.some((msg) => msg.content?.length);
@@ -262,6 +326,18 @@ const registerWsEventHandlers = (): void => {
       return { success: true };
     } catch (error) {
       console.error('Error starting WebSocket connection:', error);
+
+      const historyKey = `${collection.uid}:${request.uid}`;
+      const historyEntryId = activeWsHistory.get(historyKey);
+      if (historyEntryId) {
+        requestHistoryStore.updateEntry(historyEntryId, {
+          statusText: 'Error',
+          error: error instanceof Error ? error.message : String(error)
+        });
+        activeWsHistory.delete(historyKey);
+        broadcastToAllWebviews('history:changed');
+      }
+
       if (error instanceof Error) {
         sendEvent('main:ws:error', request.uid, collection.uid, { error: error.message });
         throw error;

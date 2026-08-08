@@ -1,6 +1,7 @@
 
 import { AxiosResponse, AxiosError } from 'axios';
-import { registerHandler, sendToWebview } from '../handlers';
+import { registerHandler, sendToWebview, broadcastToAllWebviews } from '../handlers';
+import { requestHistoryStore, buildHistoryItemSnapshot } from '../../store/request-history';
 import { prepareRequest, BrunoRequest as PrepareRequestType } from './prepare-request';
 import { interpolateVars } from './interpolate-vars';
 import { createAxiosInstance, AxiosInstanceOptions } from './axios-instance';
@@ -752,6 +753,38 @@ const registerNetworkIpc = (): void => {
     // Mutable copy of runtime variables for script execution
     const mutableRuntimeVariables: Record<string, unknown> = { ...(runtimeVariables || {}) };
 
+    // Records this send as a history entry. Wrapped defensively — history
+    // bookkeeping must never break the actual request flow.
+    const recordHistoryEntry = (patch: {
+      status?: number;
+      statusText?: string;
+      duration?: number;
+      size?: number;
+      error?: string;
+      url?: string;
+      method?: string;
+    }): void => {
+      try {
+        requestHistoryStore.addEntry({
+          kind: 'http',
+          method: patch.method || (_item.request as { method?: string } | undefined)?.method || 'GET',
+          url: patch.url || (_item.request as { url?: string } | undefined)?.url || '',
+          itemUid,
+          itemName: (_item.name as string) || 'Untitled',
+          itemType: (_item.type as string) || 'http-request',
+          collectionUid,
+          collectionPath,
+          collectionName: (_collection.name as string) || '',
+          environmentName: (environment as { name?: string } | null)?.name,
+          item: buildHistoryItemSnapshot(_item),
+          ...patch
+        });
+        broadcastToAllWebviews('history:changed');
+      } catch (historyError) {
+        console.error('Failed to record request history:', historyError);
+      }
+    };
+
     try {
       const envVars = getEnvVars(environment as never);
 
@@ -1003,6 +1036,15 @@ const registerNetworkIpc = (): void => {
           },
           error: 'Request skipped by pre-request script'
         });
+        recordHistoryEntry({
+          status: 0,
+          statusText: 'Skipped',
+          duration: 0,
+          size: 0,
+          url: scriptRequest.url,
+          method: scriptRequest.method,
+          error: 'Request skipped by pre-request script'
+        });
         return {
           status: 0,
           statusText: 'Skipped',
@@ -1059,6 +1101,16 @@ const registerNetworkIpc = (): void => {
           duration: result.duration,
           timeline: result.timeline
         },
+        error: result.error
+      });
+
+      recordHistoryEntry({
+        status: result.status,
+        statusText: result.statusText,
+        duration: result.duration,
+        size: result.size,
+        url: scriptRequest.url,
+        method: scriptRequest.method,
         error: result.error
       });
 
@@ -1164,6 +1216,13 @@ const registerNetworkIpc = (): void => {
       // Return error response instead of throwing
       // Use actual error message for statusText to match bruno-copy's behavior
       const errorMessage = err.message || 'Error occurred while executing the request!';
+      recordHistoryEntry({
+        status: 0,
+        statusText: errorMessage,
+        duration: 0,
+        size: 0,
+        error: errorMessage
+      });
       return {
         status: 0,
         statusText: errorMessage,

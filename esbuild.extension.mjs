@@ -46,11 +46,16 @@ function resolveFromNodeModules(pkgPath) {
   }
 
   if (subPath) {
-    // Resolve subpath directly
+    // Resolve subpath directly. If the subpath genuinely doesn't exist under
+    // this package, this is not the right package/version — fall through to
+    // null rather than silently returning the package's unrelated main entry
+    // (which previously caused e.g. `ajv/dist/compile/codegen` to resolve to
+    // some other ajv major version's `dist/ajv.js`, corrupting the bundle).
     const fullPath = path.join(pkgDir, subPath);
     if (fs.existsSync(fullPath)) return fullPath;
     if (fs.existsSync(fullPath + '.js')) return fullPath + '.js';
     if (fs.existsSync(fullPath + '/index.js')) return fullPath + '/index.js';
+    return null;
   }
 
   // Read package.json for main entry
@@ -131,7 +136,26 @@ const bypassPnPPlugin = {
         return null;
       }
 
-      // Try to resolve from local node_modules
+      // Resolve relative to the importing file's own directory first, so a
+      // package's own nested node_modules (e.g. @usebruno/js pins its own
+      // ajv + ajv-formats pair) takes precedence over whatever version got
+      // hoisted to the project root — matching normal Node.js resolution
+      // instead of always flattening to root. Without this, a root-hoisted
+      // package of a different major version can silently shadow the
+      // version a nested dependency actually needs.
+      if (args.resolveDir) {
+        try {
+          const localToImporter = createRequire(path.join(args.resolveDir, 'noop.js'));
+          const resolved = localToImporter.resolve(args.path);
+          if (path.isAbsolute(resolved)) {
+            return { path: resolved };
+          }
+        } catch (e) {
+          // fall through to root-level resolution below
+        }
+      }
+
+      // Try to resolve from local node_modules (rooted at the project root)
       try {
         const resolved = localRequire.resolve(args.path);
         if (path.isAbsolute(resolved)) {

@@ -3,13 +3,14 @@
 import { GrpcClient } from '@usebruno/requests';
 import { cloneDeep, each, get } from 'lodash';
 import path from 'path';
-import { registerHandler, sendToWebview } from '../handlers';
+import { registerHandler, sendToWebview, broadcastToAllWebviews } from '../handlers';
 import { interpolateVars } from './interpolate-vars';
 import { getEnvVars, getTreePathFromCollectionToItem, mergeHeaders, mergeScripts, mergeVars, mergeAuth } from '../../utils/collection';
 import { getCertsAndProxyConfig } from './cert-utils';
 import { getPreferences } from '../../store/preferences';
 import { setAuthHeaders } from './prepare-request';
 import { interpolateString } from './interpolate-string';
+import { requestHistoryStore, buildHistoryItemSnapshot } from '../../store/request-history';
 
 interface GrpcBody {
   mode?: string;
@@ -200,8 +201,46 @@ const configureRequest = async (
 
 let grpcClient: GrpcClient | null = null;
 
+// Tracks in-flight gRPC invocations so terminal lifecycle events (emitted by
+// GrpcClient itself, not this file) can be correlated back to the history
+// entry created when the call was initiated.
+const activeGrpcHistory = new Map<string, string>(); // `${collectionUid}:${itemUid}` -> historyEntryId
+
+const trackGrpcTerminalEvent = (eventName: string, args: unknown[]): void => {
+  if (eventName !== 'grpc:end' && eventName !== 'grpc:error') {
+    return;
+  }
+
+  const [requestId, collectionUid, payload] = args as [string, string, Record<string, unknown> | undefined];
+  if (typeof requestId !== 'string' || typeof collectionUid !== 'string') {
+    return;
+  }
+
+  const key = `${collectionUid}:${requestId}`;
+  const entryId = activeGrpcHistory.get(key);
+  if (!entryId) return;
+
+  const entry = requestHistoryStore.getEntry(entryId);
+  const patch: { statusText: string; duration?: number; error?: string } = { statusText: 'Completed' };
+
+  if (eventName === 'grpc:error') {
+    patch.statusText = 'Error';
+    patch.error = (payload?.error as string) || 'gRPC error';
+  }
+  if (entry) patch.duration = Date.now() - entry.timestamp;
+  activeGrpcHistory.delete(key);
+
+  requestHistoryStore.updateEntry(entryId, patch);
+  broadcastToAllWebviews('history:changed');
+};
+
 const createSendEvent = () => {
   return (eventName: string, ...args: unknown[]) => {
+    try {
+      trackGrpcTerminalEvent(eventName, args);
+    } catch (err) {
+      console.error('Failed to track gRPC request history:', err);
+    }
     sendToWebview(eventName, ...args);
   };
 };
@@ -289,6 +328,27 @@ const registerGrpcEventHandlers = (): void => {
         timestamp: Date.now()
       };
 
+      try {
+        const historyEntry = requestHistoryStore.addEntry({
+          kind: 'grpc',
+          method: preparedRequest.methodType || preparedRequest.method || 'GRPC',
+          url: preparedRequest.url,
+          itemUid: request.uid,
+          itemName: (requestCopy as unknown as { name?: string }).name || 'Untitled',
+          itemType: (requestCopy as unknown as { type?: string }).type || 'grpc-request',
+          collectionUid: collection.uid,
+          collectionPath: collection.pathname,
+          collectionName: (collection as unknown as { name?: string }).name || '',
+          environmentName: (environment as unknown as { name?: string } | null)?.name,
+          statusText: 'Connecting',
+          item: buildHistoryItemSnapshot(requestCopy as unknown as Record<string, unknown>)
+        });
+        activeGrpcHistory.set(`${collection.uid}:${request.uid}`, historyEntry.id);
+        broadcastToAllWebviews('history:changed');
+      } catch (historyError) {
+        console.error('Failed to record gRPC request history:', historyError);
+      }
+
       await grpcClient?.startConnection({
         request: preparedRequest as never,
         collection: collection as never,
@@ -305,6 +365,18 @@ const registerGrpcEventHandlers = (): void => {
       return { success: true };
     } catch (error) {
       console.error('Error starting gRPC connection:', error);
+
+      const historyKey = `${collection.uid}:${request.uid}`;
+      const historyEntryId = activeGrpcHistory.get(historyKey);
+      if (historyEntryId) {
+        requestHistoryStore.updateEntry(historyEntryId, {
+          statusText: 'Error',
+          error: error instanceof Error ? error.message : String(error)
+        });
+        activeGrpcHistory.delete(historyKey);
+        broadcastToAllWebviews('history:changed');
+      }
+
       if (error instanceof Error) {
         sendEvent('grpc:error', request.uid, collection.uid, { error: error.message });
         throw error;

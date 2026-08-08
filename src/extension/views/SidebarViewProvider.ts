@@ -9,6 +9,7 @@ import {
 } from '../ipc/handlers';
 import { storeTransientItem }  from '../panels/transient-request-panel';
 import { WebviewHelper } from '../webview/helper';
+import { requestHistoryStore } from '../store/request-history';
 
 interface IpcMessage {
   type: 'invoke' | 'send';
@@ -332,6 +333,22 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
           }
         }
         break;
+
+      case 'sidebar:open-history-entry': {
+        const { id } = (args[0] || {}) as { id?: string };
+        const entry = id ? requestHistoryStore.getEntry(id) : undefined;
+        if (entry) {
+          storeTransientItem(entry.id, { ...entry.item, uid: entry.id });
+          await vscode.commands.executeCommand(
+            'bruno.openTransientRequest',
+            entry.id,
+            entry.itemName || 'Untitled',
+            entry.collectionUid,
+            entry.collectionPath
+          );
+        }
+        break;
+      }
 
       case 'sidebar:open-create-collection':
         await vscode.commands.executeCommand('bruno.openCreateCollection');
