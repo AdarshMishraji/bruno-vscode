@@ -22,6 +22,37 @@ const StyledWrapper = styled.div<{
     flex-direction: column-reverse;
   }
 
+  .CodeMirror-cursor {
+    border-left: 1px solid ${(props) => props.theme.codemirror.cursor} !important;
+  }
+
+  div.CodeMirror-selected,
+  .CodeMirror-selected {
+    background: ${(props) => props.theme.codemirror.selectionBg} !important;
+  }
+
+  .CodeMirror-activeline-background {
+    background: ${(props) => props.theme.codemirror.activeLineBg} !important;
+  }
+
+  /* Autocomplete popup — matches VS Code's own editor suggestion widget */
+  .CodeMirror-hints {
+    background: ${(props) => props.theme.codemirror.suggestWidget.bg} !important;
+    border: 1px solid ${(props) => props.theme.codemirror.suggestWidget.border} !important;
+    color: ${(props) => props.theme.codemirror.suggestWidget.fg} !important;
+    font-family: ${(props) => (props.font ? props.font : 'default')};
+    box-shadow: ${(props) => props.theme.shadow.sm};
+  }
+
+  .CodeMirror-hint {
+    color: ${(props) => props.theme.codemirror.suggestWidget.fg} !important;
+  }
+
+  li.CodeMirror-hint-active {
+    background: ${(props) => props.theme.codemirror.suggestWidget.selectedBg} !important;
+    color: ${(props) => props.theme.codemirror.suggestWidget.selectedFg} !important;
+  }
+
   .CodeMirror-placeholder {
     color: ${(props) => props.theme.text} !important;
     opacity: 0.5 !important;

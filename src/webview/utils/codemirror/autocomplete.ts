@@ -15,6 +15,7 @@ interface AutoCompleteOptions {
   showHintsOnClick?: boolean;
   getAllVariables?: () => AllVariables;
   getAnywordAutocompleteHints?: () => string[];
+  getMode?: () => string | undefined;
 }
 
 // Static API hints - Bruno JavaScript API (subgrouped by category)
@@ -121,6 +122,13 @@ const MOCK_DATA_HINTS = Object.keys(mockDataFunctions).map((key) => `$${key}`);
 const WORD_PATTERN = /[\w.$-/]/;
 const VARIABLE_PATTERN = /\{\{([\w$.-]*)$/;
 const NON_CHARACTER_KEYS = /^(?!Shift|Tab|Enter|Escape|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Meta|Alt|Home|End\s)\w*/;
+
+// JSON body modes (matches the mime types RequestBody hands to CodeEditor) and
+// the literal values a JSON editor should suggest in "value position" (right
+// after a `:`) — the one bit of language-aware completion CodeMirror 5 has no
+// built-in hinter for, since it never shipped a JSON hint addon.
+const JSON_BODY_MODES = ['application/ld+json', 'application/json'];
+const JSON_LITERAL_HINTS = ['true', 'false', 'null'];
 
 /**
  * Generate progressive hints for a given full hint
@@ -339,11 +347,25 @@ const extractWordFromLine = (currentLine: any, cursorPosition: any) => {
 };
 
 /**
+ * Whether the word starting at `wordStart` on `currentLine` sits in JSON
+ * "value position" — i.e. right after a `:` (ignoring whitespace) — where a
+ * literal like true/false/null would be valid.
+ * @param {string} currentLine - The current line content
+ * @param {number} wordStart - Start offset of the word being typed
+ * @returns {boolean}
+ */
+const isJsonValuePosition = (currentLine: string, wordStart: number) => {
+  const beforeWord = currentLine.slice(0, wordStart).replace(/\s+$/, '');
+  return beforeWord.endsWith(':');
+};
+
+/**
  * Get current word being typed at cursor position with context information
  * @param {Object} cm - CodeMirror instance
+ * @param {string} [mode] - The editor's current CodeMirror mode/mime-type
  * @returns {Object|null} Word information with context or null
  */
-const getCurrentWordWithContext = (cm: any) => {
+const getCurrentWordWithContext = (cm: any, mode?: string) => {
   const cursor = cm.getCursor();
   const currentLine = cm.getLine(cursor.line);
   const currentString = cm.getRange({ line: cursor.line, ch: 0 }, cursor);
@@ -370,6 +392,17 @@ const getCurrentWordWithContext = (cm: any) => {
 
   const { word, start, end } = wordInfo;
   const { replaceFrom, replaceTo } = calculateWordReplacementPositions(cursor, start, end, word);
+
+  if (mode && JSON_BODY_MODES.includes(mode) && isJsonValuePosition(currentLine, start)) {
+    return {
+      word,
+      from: replaceFrom,
+      to: replaceTo,
+      context: 'json-value',
+      requiresBraces: false
+    };
+  }
+
   const context = determineWordContext(word);
 
   return {
@@ -447,6 +480,8 @@ const getAllowedHintsByContext = (categorizedHints: any, context: any, showHints
 
   if (context === 'variables' && showHintsFor.includes('variables')) {
     allowedHints = [...categorizedHints.variables];
+  } else if (context === 'json-value') {
+    allowedHints = [...JSON_LITERAL_HINTS];
   } else if (context === 'api') {
     const hasApiHints = showHintsFor.some((hint: any) => ['req', 'res', 'bru'].includes(hint));
     if (hasApiHints) {
@@ -531,7 +566,7 @@ export const getAutoCompleteHints = (cm: any, allVariables: AllVariables = {}, a
     return null;
   }
 
-  const wordInfo = getCurrentWordWithContext(cm);
+  const wordInfo = getCurrentWordWithContext(cm, options.getMode?.());
   if (!wordInfo) {
     return null;
   }

@@ -71,6 +71,16 @@ const readVSCodeColors = () => ({
   // Focus/Selection
   focusBorder: getVSCodeColor('focusBorder', '#007fd4'),
   selectionBg: getVSCodeColor('editor-selectionBackground', '#264f78'),
+  editorCursorFg: getVSCodeColor('editorCursor-foreground', '#aeafad'),
+  editorLineHighlightBg: getVSCodeColor('editor-lineHighlightBackground', 'transparent'),
+
+  // Suggestion widget (autocomplete popup) — mirrors VS Code's own editor suggestions
+  suggestWidgetBg: getVSCodeColor('editorSuggestWidget-background', '#252526'),
+  suggestWidgetBorder: getVSCodeColor('editorSuggestWidget-border', '#454545'),
+  suggestWidgetFg: getVSCodeColor('editorSuggestWidget-foreground', '#d4d4d4'),
+  suggestWidgetSelectedBg: getVSCodeColor('editorSuggestWidget-selectedBackground', '#04395e'),
+  suggestWidgetSelectedFg: getVSCodeColor('editorSuggestWidget-selectedForeground', '') || getVSCodeColor('editorSuggestWidget-foreground', '#d4d4d4'),
+  suggestWidgetHighlightFg: getVSCodeColor('editorSuggestWidget-highlightForeground', '#2aaaff'),
 
   // Accent/Brand - use focusBorder as the accent color
   accent: getVSCodeColor('focusBorder', '#007fd4'),
@@ -498,6 +508,9 @@ export const createVSCodeTheme = (mode: 'light' | 'dark') => {
     codemirror: {
       bg: colors.editorBg,
       border: colors.editorBg,
+      cursor: colors.editorCursorFg,
+      selectionBg: colors.selectionBg,
+      activeLineBg: colors.editorLineHighlightBg,
       placeholder: {
         color: colors.inputPlaceholder,
         opacity: 0.7,
@@ -509,6 +522,14 @@ export const createVSCodeTheme = (mode: 'light' | 'dark') => {
         valid: colors.successFg,
         invalid: colors.errorFg,
         prompt: colors.infoFg,
+      },
+      suggestWidget: {
+        bg: colors.suggestWidgetBg,
+        border: colors.suggestWidgetBorder,
+        fg: colors.suggestWidgetFg,
+        selectedBg: colors.suggestWidgetSelectedBg,
+        selectedFg: colors.suggestWidgetSelectedFg,
+        highlightFg: colors.suggestWidgetHighlightFg,
       },
       tokens: {
         definition: syntaxColors.variable,

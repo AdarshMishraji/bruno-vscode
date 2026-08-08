@@ -226,7 +226,8 @@ export default class CodeEditor extends React.Component<CodeEditorProps, CodeEdi
 
       const autoCompleteOptions = {
         showHintsFor: this.props.showHintsFor,
-        getAllVariables: getAllVariablesHandler
+        getAllVariables: getAllVariablesHandler,
+        getMode: () => this.props.mode
       };
 
       this.brunoAutoCompleteCleanup = setupAutoComplete(

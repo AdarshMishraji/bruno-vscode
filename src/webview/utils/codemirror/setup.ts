@@ -5,6 +5,9 @@ import 'codemirror/lib/codemirror.css';
 import 'codemirror/theme/material.css';
 import 'codemirror/theme/monokai.css';
 import 'codemirror/addon/scroll/simplescrollbars.css';
+import 'codemirror/addon/hint/show-hint.css';
+import 'codemirror/addon/dialog/dialog.css';
+import 'codemirror/addon/fold/foldgutter.css';
 
 require('codemirror/mode/javascript/javascript');
 require('codemirror/mode/xml/xml');

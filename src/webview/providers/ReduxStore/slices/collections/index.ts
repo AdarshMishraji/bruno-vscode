@@ -593,6 +593,16 @@ export const collectionsSlice = createSlice({
           const draft = ensureDraft(item);
           if (draft.request) {
             (draft.request as { method?: string }).method = method;
+
+            // Methods that conventionally carry a body default to JSON instead
+            // of leaving the body mode at 'none' — but only when the user
+            // hasn't already picked a mode, so an explicit choice (e.g.
+            // form-urlencoded) is never clobbered by switching methods.
+            const bodyModifiableMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
+            const body = (draft.request as { body?: { mode?: string } }).body;
+            if (body && body.mode === 'none' && bodyModifiableMethods.includes(method?.toUpperCase())) {
+              body.mode = 'json';
+            }
           }
         }
       }
