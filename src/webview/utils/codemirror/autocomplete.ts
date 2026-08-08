@@ -196,18 +196,27 @@ const addApiHintsToSet = (apiHints: any, showHintsFor: any) => {
 };
 
 /**
- * Add variable hints to categorized hints
+ * Add the real collection/environment/runtime variable hints to a set —
+ * kept separate from the generic $mockData hints (see buildCategorizedHintsList)
+ * so real variables always sort ahead of them and can't get crowded out by
+ * the hint-count cap.
  * @param {Set} variableHints - Set to add variable hints to
  * @param {Object} allVariables - All available variables
  */
 const addVariableHintsToSet = (variableHints: any, allVariables: any) => {
-  MOCK_DATA_HINTS.forEach((hint) => {
-    generateProgressiveHints(hint).forEach((h) => variableHints.add(h));
-  });
-
   const variableHintsList = transformVariablesToHints(allVariables);
   variableHintsList.forEach((hint: any) => {
     generateProgressiveHints(hint).forEach((h) => variableHints.add(h));
+  });
+};
+
+/**
+ * Add the generic $mockData (faker) function hints to a set.
+ * @param {Set} mockDataHints - Set to add mock-data hints to
+ */
+const addMockDataHintsToSet = (mockDataHints: any) => {
+  MOCK_DATA_HINTS.forEach((hint) => {
+    generateProgressiveHints(hint).forEach((h) => mockDataHints.add(h));
   });
 };
 
@@ -234,19 +243,24 @@ const addCustomHintsToSet = (anywordHints: any, customHints: any) => {
 const buildCategorizedHintsList = (allVariables: AllVariables = {}, anywordAutocompleteHints: string[] = [], options: AutoCompleteOptions = {}) => {
   const categorizedHints = {
     api: new Set(),
-    variables: new Set(),
+    realVariables: new Set(),
+    mockDataVariables: new Set(),
     anyword: new Set()
   };
 
   const showHintsFor = options.showHintsFor || [];
 
   addApiHintsToSet(categorizedHints.api, showHintsFor);
-  addVariableHintsToSet(categorizedHints.variables, allVariables);
+  addVariableHintsToSet(categorizedHints.realVariables, allVariables);
+  addMockDataHintsToSet(categorizedHints.mockDataVariables);
   addCustomHintsToSet(categorizedHints.anyword, anywordAutocompleteHints);
 
   return {
     api: Array.from(categorizedHints.api).sort(),
-    variables: Array.from(categorizedHints.variables).sort(),
+    // Real variables first so they can never be crowded out by the
+    // hint-count cap in filterHintsByContext — there are 200+ $mockData
+    // functions, which would otherwise dominate an unfiltered `{{` list.
+    variables: [...Array.from(categorizedHints.realVariables).sort(), ...Array.from(categorizedHints.mockDataVariables).sort()],
     anyword: Array.from(categorizedHints.anyword).sort()
   };
 };
@@ -503,7 +517,12 @@ const getAllowedHintsByContext = (categorizedHints: any, context: any, showHints
  * @returns {string[]} Filtered hints
  */
 const filterHintsByContext = (categorizedHints: any, currentWord: any, context: any, showHintsFor: string[] = []) => {
-  if (!currentWord) {
+  // Variables are the one context where an empty prefix is meaningful: the
+  // user just typed `{{` and wants to see every variable available to the
+  // collection, not just ones matching a prefix they haven't typed yet.
+  // Other contexts (api/anyword) keep bailing out on an empty word so
+  // suggestions don't pop up from the cursor merely sitting somewhere.
+  if (!currentWord && context !== 'variables') {
     return [];
   }
 
@@ -513,7 +532,19 @@ const filterHintsByContext = (categorizedHints: any, currentWord: any, context: 
     return hint.toLowerCase().startsWith(currentWord.toLowerCase());
   });
 
-  const hintParts = getHintParts(filtered, currentWord);
+  let hintParts = getHintParts(filtered, currentWord);
+
+  if (context === 'variables') {
+    // extractNextSegmentSuggestions (inside getHintParts) alphabetically
+    // re-sorts its output, which would otherwise let the 200+ generic
+    // $mockData functions drown out real collection/environment/runtime
+    // variables once the result below is capped. Re-partition — real
+    // variables first — right before the cap so real ones are never
+    // crowded out of an unfiltered `{{` list.
+    const realVariableHints = hintParts.filter((hint: string) => !hint.startsWith('$'));
+    const mockDataHints = hintParts.filter((hint: string) => hint.startsWith('$'));
+    hintParts = [...realVariableHints, ...mockDataHints];
+  }
 
   return hintParts.slice(0, 50);
 };
