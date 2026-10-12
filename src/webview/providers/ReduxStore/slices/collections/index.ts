@@ -1,142 +1,137 @@
+import type { ScriptErrorPhase } from '@bruno-types';
+import {
+  SCRIPT_ERROR_FIELDS,
+  SCRIPT_ERROR_PHASES,
+  scriptErrorContextField,
+  scriptErrorMessageField
+} from '@bruno-types';
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import { find, filter, each, cloneDeep, get, set, map, concat } from 'lodash';
+import { getDataTypeFromValue, parseQueryParams } from '@usebruno/common/utils';
+import { cloneDeep, filter, find, get, map, set } from 'lodash';
 import mime from 'mime-types';
 import path from 'path';
 import {
   addDepth,
   collapseAllItemsInCollection,
-  findCollectionByUid,
-  findCollectionByPathname,
-  findItemInCollection,
-  findItemInCollectionByPathname,
-  findEnvironmentInCollection,
-  isItemAFolder,
-  isItemARequest,
   deleteItemInCollection,
   deleteItemInCollectionByPathname,
-  getUniqueTagsFromItems
+  findCollectionByPathname,
+  findCollectionByUid,
+  findEnvironmentInCollection,
+  findItemInCollection,
+  findItemInCollectionByPathname,
+  getUniqueTagsFromItems,
+  isItemAFolder,
+  isItemARequest
 } from 'utils/collections';
+import { generateUidBasedOnHash, uuid } from 'utils/common';
 import { getSubdirectoriesFromRoot } from 'utils/common/platform';
-import { uuid, generateUidBasedOnHash } from 'utils/common';
-import { splitOnFirst, parsePathParams } from 'utils/url';
-import { parseQueryParams, getDataTypeFromValue } from '@usebruno/common/utils';
+import { parsePathParams, splitOnFirst } from 'utils/url';
 // @ts-expect-error - @usebruno/common/utils may not export buildQueryString in types
+import type { AppCollection, AppItem, AuthMode, DraftRequestBody, KeyValue, OAuth2CredentialEntry, TimelineEntry, UID } from '@bruno-types';
 import { buildQueryString as stringifyQueryParams } from '@usebruno/common/utils';
-import type { AppCollection, AppItem, UID, KeyValue, DraftRequestBody, HttpRequestParam, ResponseState, AuthMode, OAuth2CredentialEntry } from '@bruno-types';
 import type {
-  CollectionUidPayload,
-  ItemUidPayload,
-  FolderUidPayload,
-  UpdateCollectionMountStatusPayload,
-  UpdateCollectionLoadingStatePayload,
-  SetCollectionSecurityConfigPayload,
-  BrunoConfigUpdateEventPayload,
-  RenameCollectionPayload,
-  UpdateCollectionPathnamePayload,
-  SortCollectionsPayload,
-  UpdateLastActionPayload,
-  UpdateSettingsSelectedTabPayload,
-  SaveEnvironmentPayload,
-  SelectEnvironmentPayload,
-  NewItemPayload,
-  DeleteItemPayload,
-  RenameItemPayload,
-  CloneItemPayload,
-  ScriptEnvironmentUpdateEventPayload,
-  ProcessEnvUpdateEventPayload,
-  RequestCancelledPayload,
-  ResponseReceivedPayload,
-  ResponseClearedPayload,
-  ClearTimelinePayload,
-  ClearRequestTimelinePayload,
-  SetEnvironmentsDraftPayload,
-  ClearEnvironmentsDraftPayload,
-  NewEphemeralHttpRequestPayload,
-  RequestUrlChangedPayload,
-  UpdateItemSettingsPayload,
-  UpdateAuthPayload,
-  AddQueryParamPayload,
-  SetQueryParamsPayload,
-  MoveQueryParamPayload,
-  UpdateQueryParamPayload,
-  DeleteQueryParamPayload,
-  UpdatePathParamPayload,
-  AddRequestHeaderPayload,
-  UpdateRequestHeaderPayload,
-  DeleteRequestHeaderPayload,
-  SetRequestHeadersPayload,
-  MoveRequestHeaderPayload,
-  UpdateRequestBodyPayload,
-  UpdateRequestBodyModePayload,
-  UpdateRequestGraphqlQueryPayload,
-  UpdateRequestGraphqlVariablesPayload,
-  UpdateRequestMethodPayload,
-  AddFormUrlEncodedParamPayload,
-  UpdateFormUrlEncodedParamPayload,
-  DeleteFormUrlEncodedParamPayload,
-  AddMultipartFormParamPayload,
-  UpdateMultipartFormParamPayload,
-  DeleteMultipartFormParamPayload,
-  UpdateRequestScriptPayload,
-  AddRequestVarPayload,
-  UpdateRequestVarPayload,
-  DeleteRequestVarPayload,
   AddAssertionPayload,
-  UpdateAssertionPayload,
+  AddCollectionHeaderPayload,
+  AddCollectionVarPayload,
+  AddFilePayload,
+  AddFolderHeaderPayload,
+  AddFolderVarPayload,
+  AddRequestHeaderPayload,
+  AddRequestVarPayload,
+  BrunoConfigUpdateEventPayload,
+  ClearEnvironmentsDraftPayload,
+  ClearRequestTimelinePayload,
+  ClearTimelinePayload,
+  CloneItemPayload,
+  CollectionAddDirectoryEventPayload,
+  CollectionAddEnvFileEventPayload,
+  CollectionAddFileEventPayload,
+  CollectionAddOauth2CredentialsByUrlPayload,
+  CollectionChangeFileEventPayload,
+  CollectionClearOauth2CredentialsByUrlPayload,
+  CollectionRenamedEventPayload,
+  CollectionUidPayload,
+  CollectionUnlinkDirectoryEventPayload,
+  CollectionUnlinkEnvFileEventPayload,
+  CollectionUnlinkFileEventPayload,
   DeleteAssertionPayload,
-  UpdateRequestTestsPayload,
-  UpdateRequestDocsPayload,
-  UpdateCollectionAuthPayload,
+  DeleteCollectionHeaderPayload,
+  DeleteFilePayload,
+  DeleteFolderHeaderPayload,
+  DeleteItemPayload,
+  DeleteRequestHeaderPayload,
+  DeleteRequestVarPayload,
+  FolderUidPayload,
+  GrpcResponseReceivedPayload,
+  InitRunRequestEventPayload,
+  ItemUidPayload,
+  MoveCollectionPayload,
+  MoveFormUrlEncodedParamPayload,
+  MoveMultipartFormParamPayload,
+  MoveQueryParamPayload,
+  MoveRequestHeaderPayload,
+  NewItemPayload,
+  ProcessEnvUpdateEventPayload,
+  RenameCollectionPayload,
+  RenameItemPayload,
+  RequestUrlChangedPayload,
+  ResetRunResultsPayload,
+  ResponseClearedPayload,
+  ResponseReceivedPayload,
+  RunFolderEventPayload,
+  RunGrpcRequestEventPayload,
+  RunRequestEventPayload,
+  SaveEnvironmentPayload,
+  ScriptEnvironmentUpdateEventPayload,
+  SelectEnvironmentPayload,
+  SetCollectionSecurityConfigPayload,
+  SetCollectionVarsPayload,
+  SetEnvironmentsDraftPayload,
+  SetFolderVarsPayload,
+  SetFormUrlEncodedParamsPayload,
+  SetMultipartFormParamsPayload,
+  SetQueryParamsPayload,
+  SetRequestHeadersPayload,
+  SortCollectionsPayload,
+  StreamDataReceivedPayload,
+  ToggleCollectionItemPayload,
+  ToggleCollectionPayload,
+  UpdateActiveConnectionsPayload,
+  UpdateAssertionPayload,
+  UpdateAuthPayload,
   UpdateCollectionAuthModePayload,
+  UpdateCollectionAuthPayload,
+  UpdateCollectionDocsPayload,
+  UpdateCollectionHeaderPayload,
+  UpdateCollectionLoadingStatePayload,
+  UpdateCollectionMountStatusPayload,
+  UpdateCollectionPathnamePayload,
   UpdateCollectionScriptPayload,
   UpdateCollectionTestsPayload,
-  UpdateCollectionDocsPayload,
-  AddCollectionHeaderPayload,
-  UpdateCollectionHeaderPayload,
-  DeleteCollectionHeaderPayload,
-  UpdateFolderAuthPayload,
-  UpdateFolderAuthModePayload,
-  UpdateFolderScriptPayload,
-  AddFolderHeaderPayload,
-  UpdateFolderHeaderPayload,
-  DeleteFolderHeaderPayload,
-  CollectionAddFileEventPayload,
-  CollectionChangeFileEventPayload,
-  CollectionUnlinkFileEventPayload,
-  CollectionAddDirectoryEventPayload,
-  CollectionUnlinkDirectoryEventPayload,
-  CollectionRenamedEventPayload,
-  CollectionUnlinkEnvFileEventPayload,
-  RunFolderEventPayload,
-  RunRequestEventPayload,
-  StreamDataReceivedPayload,
-  CollectionAddOauth2CredentialsByUrlPayload,
-  CollectionClearOauth2CredentialsByUrlPayload,
-  CollectionAddEnvFileEventPayload,
-  MoveCollectionPayload,
-  ResetRunResultsPayload,
-  InitRunRequestEventPayload,
-  UpdateRunnerConfigurationPayload,
-  UpdateActiveConnectionsPayload,
-  AddFolderVarPayload,
-  UpdateFolderVarPayload,
-  AddCollectionVarPayload,
   UpdateCollectionVarPayload,
-  SetFolderVarsPayload,
-  SetCollectionVarsPayload,
-  AddFilePayload,
   UpdateFilePayload,
-  DeleteFilePayload,
-  SetFormUrlEncodedParamsPayload,
-  MoveFormUrlEncodedParamPayload,
-  SetMultipartFormParamsPayload,
-  MoveMultipartFormParamPayload,
+  UpdateFolderAuthModePayload,
+  UpdateFolderAuthPayload,
+  UpdateFolderHeaderPayload,
+  UpdateFolderScriptPayload,
+  UpdateFolderVarPayload,
+  UpdateItemSettingsPayload,
+  UpdateLastActionPayload,
+  UpdatePathParamPayload,
+  UpdateRequestBodyModePayload,
+  UpdateRequestBodyPayload,
+  UpdateRequestDocsPayload,
+  UpdateRequestGraphqlQueryPayload,
+  UpdateRequestGraphqlVariablesPayload,
+  UpdateRequestHeaderPayload,
+  UpdateRequestMethodPayload,
+  UpdateRequestScriptPayload,
+  UpdateRequestTestsPayload,
+  UpdateRequestVarPayload,
+  UpdateRunnerConfigurationPayload,
   UpdateRunnerTagsPayload,
-  ToggleRunnerTagsPayload,
-  ToggleCollectionPayload,
-  ToggleCollectionItemPayload,
-  RunGrpcRequestEventPayload,
-  GrpcResponseReceivedPayload,
+  UpdateSettingsSelectedTabPayload,
   WsResponseReceivedPayload
 } from './types';
 
@@ -170,6 +165,10 @@ const wsStatusCodes: Record<number, string> = {
   1014: 'BAD_GATEWAY', 1015: 'TLS_HANDSHAKE'
 };
 
+const SCRIPT_EXECUTION_PHASES: Record<string, ScriptErrorPhase> = Object.fromEntries(
+  SCRIPT_ERROR_PHASES.map(({ phase, scriptType }) => [`${scriptType}-script-execution`, phase])
+);
+
 const initialState: CollectionsState = {
   collections: [],
   collectionSortOrder: 'default',
@@ -178,6 +177,36 @@ const initialState: CollectionsState = {
 
 const getRequestFromItem = (item: AppItem) => {
   return item.draft?.request || item.request;
+};
+
+const pushTimelineEntry = (collection: AppCollection, entry: Omit<TimelineEntry, 'id' | 'collectionUid'>) => {
+  if (!collection.timeline) {
+    collection.timeline = [];
+  }
+  collection.timeline.push({ id: uuid(), collectionUid: collection.uid, ...entry });
+};
+
+const pushStreamingTimelineEntry = (
+  collection: AppCollection,
+  item: AppItem,
+  eventType: string,
+  response: unknown,
+  eventData: unknown
+) => {
+  const timestamp = Date.now();
+  pushTimelineEntry(collection, {
+    type: 'request',
+    eventType,
+    folderUid: null,
+    itemUid: item.uid,
+    timestamp,
+    data: {
+      request: item.requestSent || item.request,
+      response,
+      eventData,
+      timestamp
+    }
+  });
 };
 
 const ensureDraft = (item: AppItem) => {
@@ -207,6 +236,30 @@ const getItemSeq = (data: any, fallback?: number): number => {
   const seq = data?.seq ?? (data as any)?.meta?.seq;
   const num = typeof seq === 'number' ? seq : Number(seq);
   return Number.isFinite(num) && num >= 1 ? num : (fallback ?? 1);
+};
+
+const applyAddFilePayloadToItem = (item: AppItem, payload: CollectionAddFileEventPayload) => {
+  const { meta, data, partial, loading, size, error } = payload;
+  const isHydrated = !item.partial && item.request !== undefined;
+  const keepHydrated = partial === true && !error && isHydrated;
+
+  item.name = data?.name;
+  item.type = data?.type;
+  item.seq = getItemSeq(data, item.seq);
+  item.tags = (data as any)?.tags;
+  item.filename = meta.name;
+  item.pathname = meta.pathname;
+  item.size = size;
+
+  if (keepHydrated) return;
+
+  item.request = data?.request;
+  item.settings = data?.settings;
+  item.examples = (data as any)?.examples;
+  item.app = (data as any)?.app;
+  item.partial = partial;
+  item.loading = loading;
+  item.error = error;
 };
 
 const ensureFolderRootDraft = (item: AppItem) => {
@@ -585,7 +638,7 @@ export const collectionsSlice = createSlice({
     },
 
     updateRequestMethod: (state, action: PayloadAction<UpdateRequestMethodPayload>) => {
-      const { collectionUid, itemUid, method } = action.payload;
+      const { collectionUid, itemUid, method, methodType } = action.payload;
       const collection = findCollectionByUid(state.collections, collectionUid);
       if (collection) {
         const item = findItemInCollection(collection, itemUid);
@@ -593,6 +646,7 @@ export const collectionsSlice = createSlice({
           const draft = ensureDraft(item);
           if (draft.request) {
             (draft.request as { method?: string }).method = method;
+            (draft.request as { methodType?: string }).methodType = methodType;
 
             // Methods that conventionally carry a body default to JSON instead
             // of leaving the body mode at 'none' — but only when the user
@@ -1562,7 +1616,9 @@ export const collectionsSlice = createSlice({
       const collection = findCollectionByUid(state.collections, collectionUid);
       if (collection) {
         collection.items = collection.items || [];
-        collection.items.push(item);
+        if (!collection.items.some((i: any) => i.uid === item.uid)) {
+          collection.items.push(item);
+        }
       }
     },
 
@@ -1668,25 +1724,8 @@ export const collectionsSlice = createSlice({
       if (meta.name !== 'folder.bru') {
         const currentItem = find(currentSubItems, (i) => i.uid === data?.uid);
         if (currentItem) {
-          // Preserve existing draft and response if they exist (don't overwrite unsaved changes)
-          const existingDraft = currentItem.draft;
-          const existingResponse = currentItem.response;
-          currentItem.name = data?.name;
-          currentItem.type = data?.type;
-          currentItem.seq = getItemSeq(data, currentItem.seq);
-          currentItem.tags = (data as any)?.tags;
-          currentItem.request = data?.request;
-          currentItem.filename = meta.name;
-          currentItem.pathname = meta.pathname;
-          currentItem.settings = data?.settings;
-          currentItem.examples = (data as any)?.examples;
-          currentItem.partial = partial;
-          currentItem.loading = loading;
-          currentItem.size = size;
-          currentItem.error = error;
-          // Restore preserved draft and response
-          if (existingDraft) currentItem.draft = existingDraft;
-          if (existingResponse) currentItem.response = existingResponse;
+          // Draft and response live outside the payload's fields, so an update leaves them intact.
+          applyAddFilePayloadToItem(currentItem, action.payload);
         } else {
           currentSubItems.push({
             uid: data?.uid as UID,
@@ -1697,6 +1736,7 @@ export const collectionsSlice = createSlice({
             request: data?.request,
             settings: data?.settings,
             examples: (data as any)?.examples,
+            app: (data as any)?.app,
             filename: meta.name,
             pathname: meta.pathname,
             draft: null,
@@ -1797,23 +1837,7 @@ export const collectionsSlice = createSlice({
         if (meta.name !== 'folder.bru') {
           const currentItem = find(currentSubItems, (i) => i.uid === data?.uid);
           if (currentItem) {
-            const existingDraft = currentItem.draft;
-            const existingResponse = currentItem.response;
-            currentItem.name = data?.name;
-            currentItem.type = data?.type;
-            currentItem.seq = getItemSeq(data, currentItem.seq);
-            currentItem.tags = (data as any)?.tags;
-            currentItem.request = data?.request;
-            currentItem.filename = meta.name;
-            currentItem.pathname = meta.pathname;
-            currentItem.settings = data?.settings;
-            currentItem.examples = (data as any)?.examples;
-            currentItem.partial = partial;
-            currentItem.loading = loading;
-            currentItem.size = size;
-            currentItem.error = error;
-            if (existingDraft) currentItem.draft = existingDraft;
-            if (existingResponse) currentItem.response = existingResponse;
+            applyAddFilePayloadToItem(currentItem, payload);
           } else {
             currentSubItems.push({
               uid: data?.uid as UID,
@@ -1824,6 +1848,7 @@ export const collectionsSlice = createSlice({
               request: data?.request,
               settings: data?.settings,
               examples: (data as any)?.examples,
+              app: (data as any)?.app,
               filename: meta.name,
               pathname: meta.pathname,
               draft: null,
@@ -1892,6 +1917,7 @@ export const collectionsSlice = createSlice({
           existingItem.request = data?.request;
           existingItem.settings = data?.settings;
           existingItem.examples = (data as any)?.examples;
+          existingItem.app = (data as any)?.app;
           existingItem.filename = meta.name;
           existingItem.pathname = meta.pathname;
           existingItem.partial = partial;
@@ -1990,16 +2016,45 @@ export const collectionsSlice = createSlice({
     },
 
     responseReceived: (state, action: PayloadAction<ResponseReceivedPayload>) => {
-      const { collectionUid, itemUid, response } = action.payload;
+      const { collectionUid, itemUid, response, requestSent } = action.payload;
       const collection = findCollectionByUid(state.collections, collectionUid);
-      if (collection) {
-        const item = findItemInCollection(collection, itemUid);
-        if (item) {
-          item.response = response;
-          item.requestState = 'received';
-          item.loading = false;
-        }
+      if (!collection) {
+        return;
       }
+
+      const item = findItemInCollection(collection, itemUid);
+      if (!item) {
+        return;
+      }
+
+      item.response = response;
+      item.errorSource = (response as { errorSource?: string } | null)?.errorSource || null;
+      item.requestState = 'received';
+      item.loading = false;
+
+      if (requestSent) {
+        item.requestSent = requestSent;
+      }
+
+      // A cancelled request resolves with a null response, so there is nothing to record.
+      if (!response) {
+        return;
+      }
+
+      const timelineRequest = requestSent || item.requestSent || item.request;
+      const timestamp = (timelineRequest as { timestamp?: number } | null)?.timestamp || Date.now();
+
+      pushTimelineEntry(collection, {
+        type: 'request',
+        folderUid: null,
+        itemUid: item.uid,
+        timestamp,
+        data: {
+          request: timelineRequest,
+          response,
+          timestamp
+        }
+      });
     },
 
     responseCleared: (state, action: PayloadAction<ResponseClearedPayload>) => {
@@ -2083,10 +2138,8 @@ export const collectionsSlice = createSlice({
     clearRequestTimeline: (state, action: PayloadAction<ClearRequestTimelinePayload>) => {
       const { collectionUid, itemUid } = action.payload;
       const collection = findCollectionByUid(state.collections, collectionUid);
-      if (collection && itemUid) {
-        const item = findItemInCollection(collection, itemUid);
-        if (item) {
-        }
+      if (collection && itemUid && collection.timeline) {
+        collection.timeline = collection.timeline.filter((entry) => entry?.itemUid !== itemUid);
       }
     },
 
@@ -2149,6 +2202,10 @@ export const collectionsSlice = createSlice({
           if (item) {
             item.status = 'completed';
             item.responseReceived = action.payload.responseReceived;
+            // The request-sent event fires before interpolation; this one carries what was actually sent.
+            if (action.payload.requestSent) {
+              item.requestSent = action.payload.requestSent;
+            }
           }
         }
 
@@ -2184,6 +2241,7 @@ export const collectionsSlice = createSlice({
           const item = runnerResult.items.findLast((i: any) => i.uid === request.uid);
           if (item) {
             item.error = action.payload.error;
+            item.errorSource = action.payload.errorSource || null;
             item.responseReceived = action.payload.responseReceived;
             item.status = 'error';
           }
@@ -2197,24 +2255,12 @@ export const collectionsSlice = createSlice({
           }
         }
 
-        if (type === 'post-response-script-execution' && request) {
+        const scriptPhase = SCRIPT_EXECUTION_PHASES[type as string];
+        if (scriptPhase && request) {
           const item = runnerResult.items.findLast((i: any) => i.uid === request.uid);
           if (item) {
-            item.postResponseScriptErrorMessage = action.payload.errorMessage;
-          }
-        }
-
-        if (type === 'test-script-execution' && request) {
-          const item = runnerResult.items.findLast((i: any) => i.uid === request.uid);
-          if (item) {
-            item.testScriptErrorMessage = action.payload.errorMessage;
-          }
-        }
-
-        if (type === 'pre-request-script-execution' && request) {
-          const item = runnerResult.items.findLast((i: any) => i.uid === request.uid);
-          if (item) {
-            item.preRequestScriptErrorMessage = action.payload.errorMessage;
+            item[scriptErrorMessageField(scriptPhase)] = action.payload.errorMessage || null;
+            item[scriptErrorContextField(scriptPhase)] = action.payload.errorContext || null;
           }
         }
       }
@@ -2226,20 +2272,26 @@ export const collectionsSlice = createSlice({
       if (collection) {
         const item = findItemInCollection(collection, itemUid);
         if (item) {
+          const { type, requestSent } = action.payload as { type?: string; requestSent?: Record<string, unknown> };
+
+          // Script phases report after the request finished, so resetting the state here would
+          // restart the loading overlay.
+          const scriptPhase = SCRIPT_EXECUTION_PHASES[type as string];
+          if (scriptPhase) {
+            const { errorMessage, errorContext } = action.payload as { errorMessage?: string | null; errorContext?: unknown };
+            (item as any)[scriptErrorMessageField(scriptPhase)] = errorMessage || null;
+            (item as any)[scriptErrorContextField(scriptPhase)] = errorContext || null;
+            return;
+          }
+
           // WS/gRPC use their own event-driven reducers for state management
           // They should never show the loading overlay (requestState = 'sending')
           const isStreamingRequest = item.type === 'ws-request' || item.type === 'grpc-request';
           item.requestState = isStreamingRequest ? null : 'sending';
 
-          const { type, requestSent } = action.payload as { type?: string; requestSent?: Record<string, unknown> };
           if (type === 'request-sent' && requestSent) {
             item.requestSent = requestSent;
           }
-
-          (item as any).testResults = [];
-          (item as any).assertionResults = [];
-          (item as any).preRequestTestResults = [];
-          (item as any).postResponseTestResults = [];
         }
       }
     },
@@ -2316,6 +2368,8 @@ export const collectionsSlice = createSlice({
           timestamp: Date.now()
         } as any;
       }
+
+      pushStreamingTimelineEntry(collection, item, eventType, item.response, eventData);
     },
 
     grpcResponseReceived: (state, action: PayloadAction<GrpcResponseReceivedPayload>) => {
@@ -2394,6 +2448,8 @@ export const collectionsSlice = createSlice({
       }
 
       item.response = updatedResponse;
+
+      pushStreamingTimelineEntry(collection, item, eventType, updatedResponse, eventData);
     },
 
     runWsRequestEvent: (state, action: PayloadAction<RunGrpcRequestEventPayload>) => {
@@ -2424,6 +2480,8 @@ export const collectionsSlice = createSlice({
           trailers: []
         } as any;
       }
+
+      pushStreamingTimelineEntry(collection, item, eventType, item.response, eventData);
     },
 
     wsResponseReceived: (state, action: PayloadAction<WsResponseReceivedPayload>) => {
@@ -2547,6 +2605,20 @@ export const collectionsSlice = createSlice({
       // Add the new credential
       filtered.push({ collectionUid, folderUid: folderUid || null, itemUid: itemUid || null, url, credentials, credentialsId, debugInfo });
       collection.oauth2Credentials = filtered;
+
+      if (!debugInfo?.data?.length) {
+        return;
+      }
+
+      pushTimelineEntry(collection, {
+        type: 'oauth2',
+        folderUid: folderUid || null,
+        itemUid: itemUid || '',
+        timestamp: Date.now(),
+        data: {
+          debugInfo: debugInfo.data
+        }
+      });
     },
 
     collectionClearOauth2CredentialsByUrl: (state, action: PayloadAction<CollectionClearOauth2CredentialsByUrlPayload>) => {
@@ -2629,6 +2701,16 @@ export const collectionsSlice = createSlice({
       if (collection) {
         const item = findItemInCollection(collection, itemUid);
         if (item) {
+          SCRIPT_ERROR_FIELDS.forEach((field) => {
+            (item as any)[field] = null;
+          });
+          item.errorSource = null;
+
+          (item as any).testResults = [];
+          (item as any).assertionResults = [];
+          (item as any).preRequestTestResults = [];
+          (item as any).postResponseTestResults = [];
+
           // WS/gRPC use their own event-driven reducers for state management
           // They should never show the loading overlay
           const isStreamingRequest = item.type === 'ws-request' || item.type === 'grpc-request';

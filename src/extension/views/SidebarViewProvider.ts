@@ -1,15 +1,17 @@
-import * as vscode from 'vscode';
-import * as path from 'path';
 import * as fs from 'fs';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { ensureBrunoEditorIntent, setPendingNotLoadedRequest } from '../editors/bruno-editor-provider';
 import {
-  setCurrentWebview,
   clearCurrentWebview,
   handleInvoke,
-  hasHandler
+  hasHandler,
+  setCurrentWebview
 } from '../ipc/handlers';
-import { storeTransientItem }  from '../panels/transient-request-panel';
-import { WebviewHelper } from '../webview/helper';
+import { storeTransientItem } from '../panels/transient-request-panel';
 import { requestHistoryStore } from '../store/request-history';
+import { findCollectionRoot } from '../utils/path';
+import { WebviewHelper } from '../webview/helper';
 
 interface IpcMessage {
   type: 'invoke' | 'send';
@@ -258,6 +260,26 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
   private async _handleIpcSend(channel: string, args: unknown[]): Promise<void> {
     switch (channel) {
       case 'sidebar:open-request':
+        if (typeof args[0] === 'string') {
+          const requestPath = vscode.Uri.file(args[0]).fsPath;
+          const basename = path.basename(requestPath);
+          if (basename === 'opencollection.yml' || basename === 'collection.bru') {
+            const rootOfFile = findCollectionRoot(requestPath);
+            const parentRoot = rootOfFile ? findCollectionRoot(rootOfFile) : null;
+            if (parentRoot) {
+              await ensureBrunoEditorIntent(requestPath, 'not-loaded');
+              setPendingNotLoadedRequest(requestPath, parentRoot);
+            }
+          }
+          await vscode.commands.executeCommand(
+            'vscode.openWith',
+            vscode.Uri.file(requestPath),
+            'bruno.requestEditor'
+          );
+        }
+        break;
+
+      case 'sidebar:open-app':
         if (typeof args[0] === 'string') {
           await vscode.commands.executeCommand(
             'vscode.openWith',

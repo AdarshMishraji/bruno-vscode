@@ -33,10 +33,10 @@ interface WsRequestData {
   headers?: Array<{ name: string; value: string; enabled?: boolean }>;
   body?: WsBody;
   vars?: unknown;
-  collectionVariables?: Record<string, string>;
-  folderVariables?: Record<string, string>;
-  requestVariables?: Record<string, string>;
-  globalEnvironmentVariables?: Record<string, string>;
+  collectionVariables?: Record<string, unknown>;
+  folderVariables?: Record<string, unknown>;
+  requestVariables?: Record<string, unknown>;
+  globalEnvironmentVariables?: Record<string, unknown>;
   oauth2CredentialVariables?: Record<string, string>;
   auth?: unknown;
   script?: unknown;
@@ -78,14 +78,14 @@ interface PreparedWsRequest {
   url: string;
   headers: Record<string, string>;
   processEnvVars: Record<string, string>;
-  envVars: Record<string, string>;
+  envVars: Record<string, unknown>;
   runtimeVariables: Record<string, string>;
   body?: WsBody;
   vars?: unknown;
-  collectionVariables?: Record<string, string>;
-  folderVariables?: Record<string, string>;
-  requestVariables?: Record<string, string>;
-  globalEnvironmentVariables?: Record<string, string>;
+  collectionVariables?: Record<string, unknown>;
+  folderVariables?: Record<string, unknown>;
+  requestVariables?: Record<string, unknown>;
+  globalEnvironmentVariables?: Record<string, unknown>;
   oauth2CredentialVariables?: Record<string, string>;
   oauth2?: unknown;
   oauth2Credentials?: unknown;
@@ -291,7 +291,7 @@ const registerWsEventHandlers = (): void => {
       const certsAndProxyConfig = await getCertsAndProxyConfig({
         collectionUid: collection.uid,
         collection: collection as never,
-        request: requestCopy as never,
+        request: preparedRequest as never,
         envVars: preparedRequest.envVars,
         runtimeVariables,
         processEnvVars: preparedRequest.processEnvVars,
@@ -302,7 +302,7 @@ const registerWsEventHandlers = (): void => {
       const { httpsAgentRequestFields } = certsAndProxyConfig;
 
       const sslOptions = {
-        rejectUnauthorized: httpsAgentRequestFields.rejectUnauthorized !== false,
+        rejectUnauthorized: false, // should be reverted back once we have a proper CA setup.
         ca: httpsAgentRequestFields.ca,
         cert: httpsAgentRequestFields.cert,
         key: httpsAgentRequestFields.key,

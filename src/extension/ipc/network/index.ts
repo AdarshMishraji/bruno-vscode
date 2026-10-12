@@ -9,22 +9,26 @@ import { saveCancelToken, deleteCancelToken, cancelTokens } from '../../utils/ca
 import { cookiesStore } from '../../store/cookies';
 import { getCookieStringForUrl, saveCookies } from '../../utils/cookies';
 import { createFormData, formatMultipartData } from '../../utils/form-data';
-import { getPreferences } from '../../store/preferences';
+import { readFileBody, getSelectedFileBodyEntry, DEFAULT_FILE_BODY_CONTENT_TYPE } from '../../utils/file-body';
+import { safeStringifyJSON } from '../../utils/common';
+import { getPreferences, preferencesUtil } from '../../store/preferences';
 import { getProcessEnvVars } from '../../store/process-env';
 import { getCertsAndProxyConfig } from './cert-utils';
 import { getEnvVars, getTreePathFromCollectionToItem, mergeVars, mergeHeaders, mergeScripts, mergeAuth, flattenItems, findItemInCollection, findItemInCollectionByPathname, hydrateRequestWithUuid, Item } from '../../utils/collection';
 import { getCollectionFormat } from '../../utils/filesystem';
 import fs from 'fs';
 import path from 'path';
-const { parseRequest: parseRequestFromFilestore } = require('@usebruno/filestore');
+import { parseRequest } from '../../utils/parse';
 import { registerOAuth2Handlers, applyOAuth2ToRequest } from './oauth2-handlers';
 import { runPreRequestScript, runPostResponseVars, runPostResponseScript, runTests, runAssertions } from '../../utils/script-runner';
+import type { ScriptErrorContext, ScriptMetadata } from '@bruno-types';
 import { v4 as uuidv4 } from 'uuid';
 import { cloneDeep, get, filter, forOwn } from 'lodash';
 import { Readable } from 'stream';
 import { registerWsEventHandlers } from './ws-event-handlers';
 import { registerGrpcEventHandlers } from './grpc-event-handlers';
 import { utils as brunoUtilsRaw } from '@usebruno/common';
+import type { NetworkLogEntry, RequestSent, ResponseTimeline } from '@bruno-types';
 import qs from 'qs';
 
 // Type assertion for @usebruno/common utils (no type definitions available)
@@ -40,9 +44,8 @@ const getJsSandboxRuntime = (collection: Record<string, unknown>): string => {
     return 'nodevm';
   }
 
-  /** QuickJS's wasm sandbox can't be esbuild-bundled (its ESM loader needs `import.meta.url`), so it
-   *  fails to init and every script silently throws; node-vm bundles cleanly. */
-  return 'nodevm';
+  // default runtime is `quickjs`
+  return 'quickjs';
 };
 
 const promisifyStream = async (stream: Readable): Promise<Buffer> => {
@@ -97,6 +100,8 @@ const parseDataFromResponse = (rawBuffer: Buffer, contentType: string): { data: 
 
 interface BrunoRequest {
   uid?: string;
+  /** The sandbox names the compiled script after this, so stack frames resolve. */
+  pathname?: string;
   url: string;
   method: string;
   headers?: Array<{ name: string; value: string; enabled?: boolean }> | Record<string, string>;
@@ -109,6 +114,7 @@ interface BrunoRequest {
     xml?: string;
     formUrlEncoded?: Array<{ name: string; value: string; enabled?: boolean }>;
     multipartForm?: Array<{ name: string; value: string; type?: string; enabled?: boolean; contentType?: string }>;
+    file?: Array<{ filePath?: string | null; contentType?: string | null; selected?: boolean }>;
     graphql?: {
       query?: string;
       variables?: string;
@@ -129,11 +135,14 @@ interface BrunoRequest {
   script?: {
     req?: string;
     res?: string;
+    reqMetadata?: ScriptMetadata | null;
+    resMetadata?: ScriptMetadata | null;
   };
   tests?: string;
+  testsMetadata?: ScriptMetadata | null;
   vars?: {
-    req?: Array<{ name: string; value: string; enabled?: boolean }>;
-    res?: Array<{ name: string; value: string; enabled?: boolean }>;
+    req?: Array<{ name: string; value: unknown; enabled?: boolean }>;
+    res?: Array<{ name: string; value: unknown; enabled?: boolean }>;
   };
   assertions?: Array<{ name: string; value: string; enabled?: boolean; uid?: string }>;
   timeout?: number;
@@ -150,9 +159,9 @@ interface BrunoRequest {
   // Additional properties needed by @usebruno/js ScriptRuntime
   name?: string;
   tags?: string[];
-  collectionVariables?: Record<string, string>;
-  folderVariables?: Record<string, string>;
-  requestVariables?: Record<string, string>;
+  collectionVariables?: Record<string, unknown>;
+  folderVariables?: Record<string, unknown>;
+  requestVariables?: Record<string, unknown>;
   globalEnvironmentVariables?: Record<string, unknown>;
   promptVariables?: Record<string, unknown>;
 }
@@ -164,13 +173,13 @@ interface RequestContext {
   collectionPath: string;
   itemUid: string;
   itemPathname: string;
-  envVars?: Record<string, string>;
-  collectionVariables?: Record<string, string>;
-  folderVariables?: Record<string, string>;
-  requestVariables?: Record<string, string>;
+  envVars?: Record<string, unknown>;
+  collectionVariables?: Record<string, unknown>;
+  folderVariables?: Record<string, unknown>;
+  requestVariables?: Record<string, unknown>;
   runtimeVariables?: Record<string, string>;
   processEnvVars?: Record<string, string>;
-  globalEnvironmentVariables?: Record<string, string>;
+  globalEnvironmentVariables?: Record<string, unknown>;
 }
 
 interface RequestOptions {
@@ -190,9 +199,55 @@ interface RequestResult {
   rawBuffer?: Buffer;
   size: number;
   duration: number;
-  timeline?: Array<{ timestamp: number; event: string }>;
+  timeline?: ResponseTimeline;
+  requestSent?: RequestSent;
   error?: string;
 }
+
+/** Request bodies can be streams (multipart) or buffers, neither of which survives postMessage. */
+const serializeRequestData = (data: unknown, multipartFields?: unknown): unknown => {
+  if (data === null || data === undefined || typeof data === 'string') {
+    return data;
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.toString();
+  }
+  if (typeof (data as { pipe?: unknown }).pipe === 'function') {
+    return multipartFields ?? '[multipart form data]';
+  }
+  try {
+    JSON.stringify(data);
+    return data;
+  } catch {
+    return '[Unserializable body]';
+  }
+};
+
+/** `false` is used to stop axios auto-setting Content-Type; no such header was actually sent. */
+const serializeSentHeaders = (headers: Record<string, unknown>): Record<string, string> => {
+  const sent: Record<string, string> = {};
+  Object.entries(headers || {}).forEach(([key, value]) => {
+    if (value === false || value === null || value === undefined) {
+      return;
+    }
+    sent[key] = String(value);
+  });
+  return sent;
+};
+
+const buildRequestSnapshot = (request: {
+  url?: string;
+  method?: string;
+  headers?: unknown;
+  data?: unknown;
+  _originalMultipartData?: unknown;
+}): RequestSent => ({
+  url: request.url,
+  method: (request.method || 'GET').toUpperCase(),
+  headers: serializeSentHeaders(request.headers as Record<string, unknown>),
+  data: serializeRequestData(request.data, request._originalMultipartData),
+  timestamp: Date.now()
+});
 
 interface RunFolderContext {
   running: boolean;
@@ -207,13 +262,8 @@ const executeRequest = async (
   options: RequestOptions = {}
 ): Promise<RequestResult> => {
   const startTime = Date.now();
-  const timeline: Array<{ timestamp: number; event: string }> = [];
-
-  const addTimelineEvent = (event: string) => {
-    timeline.push({ timestamp: Date.now() - startTime, event });
-  };
-
-  addTimelineEvent('Request started');
+  const timeline: NetworkLogEntry[] = [];
+  let requestSent: RequestSent | undefined;
 
   const cancelTokenUid = context.cancelTokenUid || uuidv4();
   const existingController = cancelTokens[cancelTokenUid];
@@ -223,7 +273,6 @@ const executeRequest = async (
   }
 
   try {
-    addTimelineEvent('Interpolating variables');
     const interpolatedRequest = interpolateVars(request as unknown as Parameters<typeof interpolateVars>[0], {
       globalEnvironmentVariables: context.globalEnvironmentVariables,
       collectionVariables: context.collectionVariables,
@@ -275,7 +324,6 @@ const executeRequest = async (
     // Apply OAuth2 token to request (auto-fetch/refresh if needed)
     const authMode = ((interpolatedRequest as { auth?: { mode?: string } })?.auth)?.mode;
     if (authMode === 'oauth2' || (interpolatedRequest as { oauth2?: unknown }).oauth2) {
-      addTimelineEvent('Applying OAuth2 token');
       await applyOAuth2ToRequest(interpolatedRequest as unknown as Record<string, unknown>, context.collectionUid, {
         envVars: context.envVars,
         runtimeVariables: context.runtimeVariables,
@@ -283,11 +331,9 @@ const executeRequest = async (
       });
     }
 
-    addTimelineEvent('Preparing request');
     const preparedRequest = prepareRequest(interpolatedRequest as unknown as PrepareRequestType);
 
     if (request.body?.mode === 'multipartForm' && request.body.multipartForm) {
-      addTimelineEvent('Preparing multipart form data');
       const enabledFields = request.body.multipartForm.filter(f => f.enabled !== false);
       const multipartFields = enabledFields.map(f => ({
         name: f.name,
@@ -301,6 +347,17 @@ const executeRequest = async (
       preparedRequest.headers = { ...preparedRequest.headers, ...formHeaders };
       (preparedRequest as unknown as { _originalMultipartData?: unknown })._originalMultipartData = multipartFields;
       (preparedRequest as unknown as { collectionPath?: string }).collectionPath = context.collectionPath;
+    }
+
+    if (request.body?.mode === 'file') {
+      const fileBody = await readFileBody(request.body.file, context.collectionPath);
+      preparedRequest.data = fileBody?.data;
+      if (fileBody) {
+        const contentTypeSet = Object.keys(preparedRequest.headers).some((key) => key.toLowerCase() === 'content-type');
+        if (!contentTypeSet) {
+          preparedRequest.headers['content-type'] = fileBody.contentType;
+        }
+      }
     }
 
     const preferences = getPreferences();
@@ -348,12 +405,15 @@ const executeRequest = async (
       } : undefined,
       requestMaxRedirects,
       digestConfig: request.digestConfig,
-      collectionPath: context.collectionPath
+      collectionPath: context.collectionPath,
+      disableCookies: options.disableCookies,
+      timeline
     };
 
     // Note: We add cookies to BOTH preparedRequest (for axios) AND the original request
     // so that tests can see the cookies via req.getHeader('Cookie')
-    const cookieString = getCookieStringForUrl(preparedRequest.url || '');
+    const shouldSendCookies = !options.disableCookies && preferencesUtil.shouldSendCookies();
+    const cookieString = shouldSendCookies ? getCookieStringForUrl(preparedRequest.url || '') : '';
     if (cookieString) {
       const mergeCookies = (existing: string, newCookies: string): string => {
         const parseCookies = (str: string) => str.split(';').reduce((acc: Record<string, string>, cookie: string) => {
@@ -390,7 +450,8 @@ const executeRequest = async (
       }
     }
 
-    addTimelineEvent('Sending request');
+    requestSent = buildRequestSnapshot(preparedRequest);
+
     const axiosInstance = createAxiosInstance(axiosOptions);
 
     preparedRequest.signal = abortController.signal;
@@ -400,13 +461,10 @@ const executeRequest = async (
       response = await axiosInstance.request(preparedRequest);
     } catch (error) {
       if ((error as Error).name === 'AbortError' || (error as Error).name === 'CanceledError') {
-        addTimelineEvent('Request cancelled');
         throw new Error('Request cancelled');
       }
       throw error;
     }
-
-    addTimelineEvent('Response received');
 
     const responseHeaders: Record<string, string> = {};
     Object.entries(response.headers).forEach(([key, value]) => {
@@ -425,16 +483,13 @@ const executeRequest = async (
     const { data: parsedData, dataBuffer: dataString } = parseDataFromResponse(rawBuffer, responseContentType);
 
     // Note: Cookies are already saved to the shared cookieJar in the axios interceptor
-    if (!options.disableCookies) {
+    if (!options.disableCookies && preferencesUtil.shouldStoreCookies()) {
       const setCookieHeaders = response.headers['set-cookie'];
       if (setCookieHeaders) {
-        addTimelineEvent('Processing cookies');
         // Persist cookies to VS Code storage
         cookiesStore.saveCookieJar();
       }
     }
-
-    addTimelineEvent('Request completed');
 
     const result: RequestResult = {
       status: response.status,
@@ -445,15 +500,14 @@ const executeRequest = async (
       rawBuffer: rawBuffer,
       size: responseSize,
       duration: Date.now() - startTime,
-      timeline
+      timeline,
+      requestSent
     };
 
     return result;
   } catch (error) {
     const axiosError = error as AxiosError;
     const duration = Date.now() - startTime;
-
-    addTimelineEvent('Request failed: ' + (error as Error).message);
 
     // If we have a response (4xx, 5xx), return it as a valid response
     // This matches bruno-electron behavior - error responses are shown as data, not as errors
@@ -485,6 +539,12 @@ const executeRequest = async (
         }
       }
 
+      // The interceptor logs the status line and headers, but cannot read the body without consuming
+      // the stream, so it lands in the network log here.
+      if (errorRawBuffer.length) {
+        timeline.push({ timestamp: new Date(), type: 'error', message: safeStringifyJSON(errorRawBuffer.toString()) });
+      }
+
       // Don't include 'error' property - this is a valid HTTP response with data
       // The status code (e.g. 400, 500) indicates the error, but the response body should be shown
       return {
@@ -496,7 +556,8 @@ const executeRequest = async (
         rawBuffer: errorRawBuffer,
         size: errorSize,
         duration,
-        timeline
+        timeline,
+        requestSent
       };
     }
 
@@ -504,7 +565,8 @@ const executeRequest = async (
     const errorMessage = (error as Error).message || 'Error occurred while executing the request!';
     return {
       status: 0,
-      statusText: errorMessage,
+      // Desktop reports the axios error code here and keeps the readable text in `error`.
+      statusText: axiosError.code || errorMessage,
       headers: {},
       data: null,
       dataBuffer: '',
@@ -512,6 +574,7 @@ const executeRequest = async (
       size: 0,
       duration,
       timeline,
+      requestSent,
       error: errorMessage
     };
   } finally {
@@ -614,7 +677,7 @@ const hydrateItemRequestFromDisk = async (
   try {
     const format = getCollectionFormat(collectionPath);
     const content = await fs.promises.readFile(pathname, 'utf8');
-    const parsed = await parseRequestFromFilestore(content, { format }) as Record<string, unknown>;
+    const parsed = await parseRequest(content, { format }) as Record<string, unknown>;
     // Preserve the runner-relevant fields we already have on `item` (uid, seq,
     // draft, etc.) while pulling in name/type/request/tags/examples/... from
     // the fresh parse.
@@ -675,6 +738,17 @@ const prepareItemRequest = (item: unknown, collection: unknown): BrunoRequest =>
       case 'multipartForm':
         headers.push({ name: 'content-type', value: 'multipart/form-data', enabled: true });
         break;
+      case 'file': {
+        const selectedFile = getSelectedFileBodyEntry(body.file);
+        if(selectedFile){
+          headers.push({
+            name: 'content-type',
+            value: (selectedFile?.contentType || '').trim() || DEFAULT_FILE_BODY_CONTENT_TYPE,
+            enabled: true
+          });
+        }
+        break;
+      }
       case 'graphql':
         headers.push({ name: 'content-type', value: 'application/json', enabled: true });
         break;
@@ -705,6 +779,7 @@ const prepareItemRequest = (item: unknown, collection: unknown): BrunoRequest =>
 
   return {
     uid: _item.uid as string,
+    pathname: (_item.pathname as string) || '',
     url: (request.url as string) || '',
     method: (request.method as string) || 'GET',
     headers,
@@ -715,6 +790,7 @@ const prepareItemRequest = (item: unknown, collection: unknown): BrunoRequest =>
     auth,
     script,
     tests,
+    testsMetadata: request.testsMetadata as ScriptMetadata | null,
     vars,
     assertions,
     timeout: (settings.timeout === 'inherit' ? undefined : settings.timeout as number) || 0,
@@ -734,6 +810,23 @@ const prepareItemRequest = (item: unknown, collection: unknown): BrunoRequest =>
     globalEnvironmentVariables,
     promptVariables: (_collection.promptVariables || {}) as Record<string, unknown>
   };
+};
+
+/** Sent on success too, with a null message, since the webview keys the card off the last report. */
+const notifyScriptExecution = (
+  channel: 'main:run-request-event' | 'main:run-folder-event',
+  scriptType: 'pre-request' | 'post-response' | 'test',
+  basePayload: Record<string, unknown>,
+  result: { success?: boolean; error?: string; errorContext?: ScriptErrorContext | null }
+): void => {
+  const failed = result.success === false;
+
+  sendToWebview(channel, {
+    type: `${scriptType}-script-execution`,
+    ...basePayload,
+    errorMessage: failed ? (result.error || `An error occurred in ${scriptType.replace('-', ' ')} script`) : null,
+    errorContext: failed ? (result.errorContext ?? null) : null
+  });
 };
 
 const registerNetworkIpc = (): void => {
@@ -993,31 +1086,28 @@ const registerNetworkIpc = (): void => {
         cancelTokenUid
       });
 
-      let skipRequest = false;
-      try {
-        const preRequestResult = await runPreRequestScript(scriptRequest, scriptContext);
+      const preRequestResult = await runPreRequestScript(scriptRequest, scriptContext);
 
-        if (!preRequestResult.success) {
-          // Pre-request script failed - send error but continue to show the error
-          sendToWebview('main:run-request-event', {
-            type: 'error',
-            itemUid,
-            requestUid,
-            collectionUid,
-            error: `Pre-request script error: ${preRequestResult.error}`
-          });
-        }
+      notifyScriptExecution('main:run-request-event', 'pre-request', { itemUid, requestUid, collectionUid }, preRequestResult);
 
-        skipRequest = preRequestResult.skipRequest || false;
-
-        if (preRequestResult.runtimeVariables) {
-          Object.assign(mutableRuntimeVariables, preRequestResult.runtimeVariables);
-          scriptContext.runtimeVariables = mutableRuntimeVariables;
-          context.runtimeVariables = mutableRuntimeVariables as Record<string, string>;
-        }
-      } catch (preReqError) {
-        console.error('Pre-request script error:', preReqError);
+      if (preRequestResult.runtimeVariables) {
+        Object.assign(mutableRuntimeVariables, preRequestResult.runtimeVariables);
+        scriptContext.runtimeVariables = mutableRuntimeVariables;
+        context.runtimeVariables = mutableRuntimeVariables as Record<string, string>;
       }
+
+      if (!preRequestResult.success) {
+        return {
+          status: 'Error',
+          isError: true,
+          error: preRequestResult.error || 'An error occurred in pre request script',
+          errorSource: 'script',
+          size: 0,
+          duration: 0
+        };
+      }
+
+      const skipRequest = preRequestResult.skipRequest || false;
 
       if (skipRequest) {
         sendToWebview('main:run-request-event', {
@@ -1070,12 +1160,7 @@ const registerNetworkIpc = (): void => {
 
       sendToWebview('main:run-request-event', {
         type: 'request-sent',
-        requestSent: {
-          url: scriptRequest.url,
-          method: scriptRequest.method,
-          headers: scriptRequest.headers,
-          timestamp: Date.now()
-        },
+        requestSent: buildRequestSnapshot(scriptRequest),
         collectionUid,
         itemUid,
         requestUid,
@@ -1085,6 +1170,25 @@ const registerNetworkIpc = (): void => {
       // Use scriptRequest so pre-request script changes are respected
       // scriptRequest will be mutated by interpolateVars inside executeRequest
       const result = await executeRequest(scriptRequest as unknown as BrunoRequest, context);
+
+      const oauth2Credentials = (scriptRequest as { oauth2Credentials?: {
+        credentials?: unknown;
+        url?: string;
+        credentialsId?: string;
+        folderUid?: string;
+        debugInfo?: { data: unknown[] };
+      } }).oauth2Credentials;
+      if (oauth2Credentials?.debugInfo) {
+        sendToWebview('main:credentials-update', {
+          collectionUid,
+          itemUid,
+          folderUid: oauth2Credentials.folderUid ?? null,
+          url: oauth2Credentials.url,
+          credentialsId: oauth2Credentials.credentialsId,
+          credentials: oauth2Credentials.credentials,
+          debugInfo: oauth2Credentials.debugInfo
+        });
+      }
 
       sendToWebview('main:run-request-event', {
         type: 'response-received',
@@ -1125,6 +1229,7 @@ const registerNetworkIpc = (): void => {
           size: result.size,
           duration: result.duration,
           timeline: result.timeline,
+          requestSent: result.requestSent,
           error: result.error
         };
       }
@@ -1169,6 +1274,9 @@ const registerNetworkIpc = (): void => {
 
       try {
         const postResponseResult = await runPostResponseScript(scriptRequest, response, scriptContext);
+
+        notifyScriptExecution('main:run-request-event', 'post-response', { itemUid, requestUid, collectionUid }, postResponseResult);
+
         if (postResponseResult.runtimeVariables) {
           Object.assign(mutableRuntimeVariables, postResponseResult.runtimeVariables);
           scriptContext.runtimeVariables = mutableRuntimeVariables;
@@ -1184,7 +1292,9 @@ const registerNetworkIpc = (): void => {
       }
 
       try {
-        await runTests(scriptRequest, response, scriptContext);
+        const testResult = await runTests(scriptRequest, response, scriptContext);
+
+        notifyScriptExecution('main:run-request-event', 'test', { itemUid, requestUid, collectionUid }, testResult);
       } catch (testError) {
         console.error('Tests error:', testError);
       }
@@ -1198,8 +1308,9 @@ const registerNetworkIpc = (): void => {
         size: result.size,
         duration: result.duration,
         timeline: result.timeline,
+        requestSent: result.requestSent,
         // Interpolated URL actually sent (executeRequest resolves {{vars}} in place). Used as the
-        // <base href> for HTML previews so relative assets resolve; requestSent.url is still raw.
+        // <base href> for HTML previews so relative assets resolve.
         requestUrl: scriptRequest.url,
         error: result.error
       };
@@ -1985,10 +2096,13 @@ const registerNetworkIpc = (): void => {
               ...eventData
             });
 
+            notifyScriptExecution('main:run-folder-event', 'pre-request', eventData, preRequestResult);
+
             if (!preRequestResult.success) {
               sendToWebview('main:run-folder-event', {
                 type: 'error',
                 error: `Pre-request script error: ${preRequestResult.error}`,
+                errorSource: 'script',
                 responseReceived: {},
                 ...eventData
               });
@@ -2008,6 +2122,7 @@ const registerNetworkIpc = (): void => {
             sendToWebview('main:run-folder-event', {
               type: 'error',
               error: `Pre-request script error: ${preErr.message}`,
+              errorSource: 'script',
               responseReceived: {},
               ...eventData
             });
@@ -2044,12 +2159,7 @@ const registerNetworkIpc = (): void => {
               .join('&');
           }
 
-          const requestSent = {
-            url: scriptRequest.url,
-            method: scriptRequest.method,
-            headers: scriptRequest.headers,
-            timestamp: Date.now()
-          };
+          const requestSent = buildRequestSnapshot(scriptRequest);
 
           sendToWebview('main:run-folder-event', {
             type: 'request-sent',
@@ -2139,6 +2249,7 @@ const registerNetworkIpc = (): void => {
 
           sendToWebview('main:run-folder-event', {
             type: 'response-received',
+            requestSent: result.requestSent,
             responseReceived: {
               status: result.status,
               statusText: result.statusText,
@@ -2172,6 +2283,8 @@ const registerNetworkIpc = (): void => {
               error: postResponseResult.error || null,
               ...eventData
             });
+
+            notifyScriptExecution('main:run-folder-event', 'post-response', eventData, postResponseResult);
 
             if (postResponseResult.runtimeVariables) {
               Object.assign(runnerRuntimeVariables, postResponseResult.runtimeVariables);
@@ -2222,6 +2335,8 @@ const registerNetworkIpc = (): void => {
           try {
             const testResult = await runTests(scriptRequest, response, scriptContext);
             testResults = testResult.results || [];
+
+            notifyScriptExecution('main:run-folder-event', 'test', eventData, testResult);
 
             sendToWebview('main:run-folder-event', {
               type: 'test-results',

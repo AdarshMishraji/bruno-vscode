@@ -38,7 +38,7 @@ import { makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
 import toast from 'react-hot-toast';
 import CollectionItem from './CollectionItem';
 import { doesCollectionHaveItemsMatchingSearchText } from 'utils/collections/search';
-import { isItemAFolder, isItemARequest } from 'utils/collections';
+import { isItemAFolder, isItemARequest, isItemAnApp } from 'utils/collections';
 import { isTabForItemActive } from 'selectors/tab';
 import StyledWrapper from './StyledWrapper';
 import { areItemsLoading } from 'utils/collections';
@@ -302,14 +302,21 @@ const Collection = ({ collection, searchText }: CollectionProps) => {
     'collection-keyboard-focused': isKeyboardFocused
   });
 
-  const { folderItems, requestItems } = useMemo(() => {
+  const { folderItems, appItems, requestItems } = useMemo(() => {
     const items = collection.items || [];
     const folders = sortByNameThenSequence(filter(items, (i: any) => isItemAFolder(i)));
+    const apps = sortByNameThenSequence(filter(items, (i: any) => isItemAnApp(i) && !i.isTransient));
     const requests = sortByNameThenSequence(filter(items, (i: any) => isItemARequest(i) && !i.isTransient));
-    return { folderItems: folders, requestItems: requests };
+    return { folderItems: folders, appItems: apps, requestItems: requests };
   }, [collection.items]);
 
   const newRequestMenuRef = useRef<any>(null);
+
+  // The menu is memoized on collection.uid, so its onClicks would capture a
+  // stale collection. Read the latest via a ref so "Untitled N" numbering
+  // reflects the current items.
+  const latestCollectionRef = useRef(collection);
+  latestCollectionRef.current = collection;
 
   const openTransientRequest = (item: any) => {
     dispatch(addTransientRequest({ collectionUid: collection.uid, item }));
@@ -327,25 +334,25 @@ const Collection = ({ collection, searchText }: CollectionProps) => {
       id: 'new-http',
       leftSection: IconApi,
       label: 'HTTP',
-      onClick: () => openTransientRequest(transientManager.createHttpRequest(collection))
+      onClick: () => openTransientRequest(transientManager.createHttpRequest(latestCollectionRef.current))
     },
     {
       id: 'new-graphql',
       leftSection: IconBrandGraphql,
       label: 'GraphQL',
-      onClick: () => openTransientRequest(transientManager.createGraphQLRequest(collection))
+      onClick: () => openTransientRequest(transientManager.createGraphQLRequest(latestCollectionRef.current))
     },
     {
       id: 'new-grpc',
       leftSection: IconNetwork,
       label: 'gRPC',
-      onClick: () => openTransientRequest(transientManager.createGrpcRequest(collection))
+      onClick: () => openTransientRequest(transientManager.createGrpcRequest(latestCollectionRef.current))
     },
     {
       id: 'new-ws',
       leftSection: IconPlugConnected,
       label: 'WebSocket',
-      onClick: () => openTransientRequest(transientManager.createWebSocketRequest(collection))
+      onClick: () => openTransientRequest(transientManager.createWebSocketRequest(latestCollectionRef.current))
     }
   ], [collection.uid]);
 
@@ -495,6 +502,9 @@ const Collection = ({ collection, searchText }: CollectionProps) => {
         {!collectionIsCollapsed ? (
           <div>
             {folderItems?.map?.((i: any) => {
+              return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} />;
+            })}
+            {appItems?.map?.((i: any) => {
               return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} />;
             })}
             {requestItems?.map?.((i: any) => {

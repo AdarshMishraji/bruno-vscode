@@ -9,13 +9,6 @@ import {
   posixifyPath
 } from '../utils/filesystem';
 
-const {
-  parseEnvironment: parseEnvFile,
-  parseRequest: parseRequestFile,
-  parseRequestViaWorker,
-  parseCollection: parseCollectionFile,
-  parseFolder: parseFolderFile
-} = require('@usebruno/filestore');
 const { dotenvToJson } = require('@usebruno/lang');
 
 import { uuid } from '../utils/common';
@@ -27,7 +20,13 @@ import { setBrunoConfig } from '../store/bruno-config';
 import EnvironmentSecretsStore from '../store/env-secrets';
 import UiStateSnapshot from '../store/ui-state-snapshot';
 import { parseFileMeta, hydrateRequestWithUuid } from '../utils/collection';
-import { parseLargeRequestWithRedaction } from '../utils/parse';
+import {
+  parseLargeRequestWithRedaction,
+  parseRequest,
+  parseCollection,
+  parseFolder,
+  parseEnvironment
+} from '../utils/parse';
 import { transformBrunoConfigAfterRead } from '../utils/transformBrunoConfig';
 
 // Message sender type - will be set by the extension (variadic args)
@@ -42,22 +41,6 @@ let messageSender: MessageSender | null = null;
 export function setMessageSender(sender: MessageSender): void {
   messageSender = sender;
 }
-
-const parseEnvironment = async (content: string, options: { format: string }) => {
-  return parseEnvFile(content, { format: options.format });
-};
-
-const parseRequest = async (content: string, options: { format: string }) => {
-  return parseRequestFile(content, { format: options.format });
-};
-
-const parseCollection = async (content: string, options: { format: string }) => {
-  return parseCollectionFile(content, { format: options.format });
-};
-
-const parseFolder = async (content: string, options: { format: string }) => {
-  return parseFolderFile(content, { format: options.format });
-};
 
 const parseDotEnv = (content: string): Record<string, string> => {
   return dotenvToJson(content);
@@ -101,6 +84,23 @@ export const isCollectionRootFile = (pathname: string, collectionPath: string): 
     return false;
   }
   return basename === 'collection.bru' || basename === 'opencollection.yml';
+};
+
+const isNestedCollectionRootFile = (pathname: string, collectionPath: string): boolean => {
+  const basename = path.basename(pathname);
+  if (basename !== 'collection.bru' && basename !== 'opencollection.yml') {
+    return false;
+  }
+  return path.normalize(path.dirname(pathname)) !== path.normalize(collectionPath);
+};
+
+const markAsNestedCollectionFile = (file: FileData, pathname: string, size: number): void => {
+  file.data = { name: path.basename(pathname), type: 'http-request' };
+  file.error = { message: 'This is a nested collection, not a request.' };
+  file.partial = true;
+  file.loading = false;
+  file.size = sizeInMB(size);
+  hydrateRequestWithUuid(file.data, pathname);
 };
 
 interface EnvironmentVariable {
@@ -633,6 +633,14 @@ class CollectionWatcher {
         return;
       }
 
+      if (isNestedCollectionRootFile(pathname, collectionPath)) {
+        markAsNestedCollectionFile(file, pathname, fileStats?.size);
+        if (sender) {
+          sender('main:collection-tree-updated', 'addFile', file);
+        }
+        return;
+      }
+
       const format = getCollectionFormat(collectionPath);
 
       file.data = await parseRequest(content, { format });
@@ -1158,6 +1166,11 @@ class CollectionWatcher {
         return null;
       }
 
+      if (isNestedCollectionRootFile(pathname, collectionPath)) {
+        markAsNestedCollectionFile(file, pathname, fileStats?.size);
+        return file;
+      }
+
       const format = getCollectionFormat(collectionPath);
       const metaData = parseFileMeta(content, format);
       if (!metaData) {
@@ -1207,6 +1220,14 @@ class CollectionWatcher {
       if (!content.trim()) {
         console.log('[Watcher] Skipping empty file:', pathname);
         this.markFileAsProcessed(collectionUid, pathname);
+        return;
+      }
+
+      if (isNestedCollectionRootFile(pathname, collectionPath)) {
+        markAsNestedCollectionFile(file, pathname, fileStats?.size);
+        if (messageSender) {
+          messageSender('main:collection-tree-updated', 'addFile', file);
+        }
         return;
       }
 
@@ -1549,6 +1570,8 @@ class CollectionWatcher {
       for (const filePath of priorityFiles) {
         await this.handleFileAddWithSender(filePath, collectionUid, collectionPath, sender);
       }
+
+      await this.loadEnvironments(collectionPath, collectionUid, sender);
 
       // If no .env file, still send process.env variables
       if (!hasDotEnv && sender) {

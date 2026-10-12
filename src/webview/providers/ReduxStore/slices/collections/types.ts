@@ -1,8 +1,8 @@
 /**
  * Payload types for collection slice reducers
  */
-import type { UID, KeyValue, AuthMode, BrunoVariableDataType } from '@bruno-types';
-import type { AppCollection, AppItem, SecurityConfig } from '@bruno-types';
+import type { UID, KeyValue, AuthMode, BrunoVariableDataType, ScriptErrorContext } from '@bruno-types';
+import type { AppCollection, AppItem, RequestSent, SecurityConfig } from '@bruno-types';
 
 export interface CollectionUidPayload {
   collectionUid: UID;
@@ -107,7 +107,8 @@ export interface ProcessEnvUpdateEventPayload extends CollectionUidPayload {
 export interface RequestCancelledPayload extends ItemUidPayload {}
 
 export interface ResponseReceivedPayload extends ItemUidPayload {
-  response: Record<string, unknown>;
+  response: Record<string, unknown> | null;
+  requestSent?: RequestSent;
 }
 
 export interface RunGrpcRequestEventPayload extends ItemUidPayload {
@@ -261,6 +262,7 @@ export interface UpdateRequestGraphqlVariablesPayload extends ItemUidPayload {
 
 export interface UpdateRequestMethodPayload extends ItemUidPayload {
   method: string;
+  methodType?: string;
 }
 
 export interface AddFormUrlEncodedParamPayload extends ItemUidPayload {}
@@ -551,13 +553,14 @@ export interface RunFolderEventPayload extends CollectionUidPayload {
   isRecursive?: boolean;
   cancelTokenUid?: UID;
   error?: string;
-  requestSent?: Record<string, unknown>;
+  requestSent?: RequestSent;
   responseReceived?: Record<string, unknown>;
   testResults?: unknown[];
   preRequestTestResults?: unknown[];
   postResponseTestResults?: unknown[];
   assertionResults?: unknown[];
-  errorMessage?: string;
+  errorMessage?: string | null;
+  errorContext?: ScriptErrorContext | null;
   runCompletionTime?: number;
   statusText?: string;
   [key: string]: unknown;

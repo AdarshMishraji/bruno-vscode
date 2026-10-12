@@ -124,6 +124,7 @@ const RequestBodyMode = ({ item, collection }: any) => {
           selectedItemId={bodyMode}
           showGroupDividers={false}
           groupStyle="select"
+          data-testid="body-mode"
         >
           <div className="flex items-center justify-center px-4 py-1 select-none selected-body-mode bg-gray-700 rounded-md">
             <span className="text-white">

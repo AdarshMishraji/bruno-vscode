@@ -9,7 +9,7 @@ import get from 'lodash/get';
 import set from 'lodash/set';
 import trim from 'lodash/trim';
 import type { RootState, AppDispatch } from 'providers/ReduxStore/index';
-import type { AppCollection, AppItem } from '@bruno-types';
+import type { AppCollection, AppItem, RequestSent } from '@bruno-types';
 import { variableNameRegex } from 'utils/common/regex';
 
 /** Redux thunk action creator type */
@@ -118,13 +118,14 @@ const safeCloneCollection = (collection: any): any => {
   };
 
   try {
-    const { items, ...collectionWithoutItems } = collection;
+    // `timeline` is UI-only and unbounded; the extension host never reads it back.
+    const { items, timeline, ...collectionWithoutItems } = collection;
     const clonedBase = JSON.parse(JSON.stringify(collectionWithoutItems));
     clonedBase.items = cloneItems(items);
     return clonedBase;
   } catch {
     // Fallback: create a shallow copy and clone items separately
-    const cloned = { ...collection };
+    const { timeline, ...cloned } = collection;
     cloned.items = cloneItems(collection.items);
     return cloned;
   }
@@ -181,7 +182,7 @@ import {
   scriptUpdateCollectionVars
 } from './index';
 
-import { each } from 'lodash';
+import { each, omit } from 'lodash';
 import { closeAllCollectionTabs, closeTabs, updateResponsePaneScrollPosition } from 'providers/ReduxStore/slices/tabs';
 import { removeCollectionFromWorkspace, addCollectionToWorkspace } from 'providers/ReduxStore/slices/workspaces';
 import { resolveRequestFilename } from 'utils/common/platform';
@@ -203,6 +204,7 @@ import { sanitizeName } from 'utils/common/regex';
 import { buildPersistedEnvVariables, applyScriptVars, getScriptModifiedKeys } from 'utils/environments';
 import { safeParseJSON, safeStringifyJSON } from 'utils/common/index';
 import { resolveInheritedAuth } from 'utils/auth';
+import { getPromptScannableBody, getPromptScannableParams } from 'utils/prompt-variables';
 import { addTab } from 'providers/ReduxStore/slices/tabs';
 import { updateSettingsSelectedTab } from './index';
 import { saveGlobalEnvironment } from 'providers/ReduxStore/slices/global-environments';
@@ -225,6 +227,9 @@ interface generateUniqueNameProps {
   collectionPathname?: unknown;
   brunoConfig?: unknown;
 }
+
+const isYmlCollection = (collection: any): boolean =>
+  collection?.format === 'yml' || Boolean(collection?.brunoConfig?.opencollection);
 
 // generate a unique names
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -487,7 +492,11 @@ export const saveMultipleCollections = (collectionDrafts: CollectionDraftInfo[])
         const collectionCopy = safeCloneCollection(collection);
         const collectionRootToSave = transformCollectionRootToSave(collectionCopy);
         const { ipcRenderer } = window;
-
+        /* 
+        TODO: Saving brunoConfig in openCollction.yml need to be handled in future. 
+        ** `saveCollectionSettings` has been refactored to save brunoConfig in openCollection.yml. 
+        ** Changes are not done here as the code is not reached in the current flow. 
+        */
         let savePromises = [];
 
         savePromises.push(ipcRenderer.invoke('renderer:save-collection-root', collectionCopy.pathname, collectionRootToSave, collectionCopy.brunoConfig));
@@ -682,11 +691,9 @@ const extractPromptVariablesForRequest = async (item: AppItem, collection: AppCo
 
     // Attempt to extract unique prompt variables from anywhere in the request and environment variables.
     prompts.push(...extractPromptVariables(allVariables));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bodyContent = (request.body as any)?.[request.body?.mode as string];
-    prompts.push(...extractPromptVariables(bodyContent));
+    prompts.push(...extractPromptVariables(getPromptScannableBody(request.body)));
     prompts.push(...extractPromptVariables(headers as any));
-    prompts.push(...extractPromptVariables((request as any).params));
+    prompts.push(...extractPromptVariables(getPromptScannableParams((request as any).params)));
     prompts.push(...extractPromptVariables(resolvedAuthRequest.auth));
     prompts.push(...extractPromptVariables(request.url));
 
@@ -780,23 +787,12 @@ export const sendRequest = (item: AppItem, collectionUid: string): ThunkAction<P
     } else {
       sendNetworkRequest(itemCopy, collectionCopy, environment, collectionCopy.runtimeVariables)
         .then((response: Record<string, unknown>) => {
-          interface TimelineEntry {
-            timestamp: Date | number;
-            [key: string]: unknown;
-          }
-          const serializedResponse = {
-            ...response,
-            timeline: (response.timeline as TimelineEntry[] | undefined)?.map((entry) => ({
-              ...entry,
-              timestamp: entry.timestamp instanceof Date ? entry.timestamp.getTime() : entry.timestamp
-            }))
-          };
-
           dispatch(
             responseReceived({
               itemUid,
               collectionUid,
-              response: serializedResponse
+              response,
+              requestSent: response.requestSent as RequestSent | undefined
             })
           );
         })
@@ -2314,10 +2310,9 @@ export const mergeAndPersistEnvironment
           return dataType === 'string' ? {} : { dataType };
         };
 
-        // Environment vars are merge-only (set/update), unlike the collection and global scopes which
-        // drop vars a script deleted: deleteEnvVar is not among the persisting scripting APIs, so a
-        // script never removes an environment variable from disk.
-        let normalizedNewVars = Object.entries(persistentEnvVariables).map(([name, value]) => ({
+        const scriptEnvVariables = omit(persistentEnvVariables, ['__name__']);
+
+        let normalizedNewVars = Object.entries(scriptEnvVariables).map(([name, value]) => ({
           uid: uuid(),
           name,
           value,
@@ -2341,7 +2336,7 @@ export const mergeAndPersistEnvironment
           }
         });
 
-        const persistedNames = new Set(Object.keys(persistentEnvVariables));
+        const persistedNames = new Set(Object.keys(scriptEnvVariables));
 
         existingVars.forEach((v: any) => {
           if (!v.ephemeral) {
@@ -2539,19 +2534,27 @@ export const saveCollectionSettings = (collectionUid: any, brunoConfig: Record<s
     const collectionRootToSave = transformCollectionRootToSave(collectionCopy);
     const { ipcRenderer } = window;
 
-    const savePromises = [];
-
-    savePromises.push(ipcRenderer.invoke('renderer:save-collection-root', collectionCopy.pathname, collectionRootToSave, collectionCopy.brunoConfig));
-
     const brunoConfigToSave = brunoConfig || (collectionCopy.draft && collectionCopy.draft.brunoConfig);
-    if (brunoConfigToSave) {
-      // Pass transformed collectionRootToSave instead of collectionCopy.root
-      // For YML format, update-bruno-config also writes to opencollection.yml,
-      // so it needs the transformed root data to avoid overwriting headers/auth/scripts
-      savePromises.push(ipcRenderer.invoke('renderer:update-bruno-config', brunoConfigToSave, collectionCopy.pathname, collectionRootToSave));
-    }
 
-    Promise.all(savePromises)
+    const save = async () => {
+      if (isYmlCollection(collectionCopy)) {
+        await ipcRenderer.invoke(
+          'renderer:save-collection-root',
+          collectionCopy.pathname,
+          collectionRootToSave,
+          brunoConfigToSave || collectionCopy.brunoConfig
+        );
+        return;
+      }
+
+      await ipcRenderer.invoke('renderer:save-collection-root', collectionCopy.pathname, collectionRootToSave, collectionCopy.brunoConfig);
+
+      if (brunoConfigToSave) {
+        await ipcRenderer.invoke('renderer:update-bruno-config', brunoConfigToSave, collectionCopy.pathname, collectionRootToSave);
+      }
+    };
+
+    save()
       .then(() => {
         if (!silent) {
           toast.success('Collection Settings saved successfully');
@@ -2755,18 +2758,19 @@ export const collectionAddEnvFileEvent = (payload: any) => (dispatch: any, getSt
       return reject(new Error('Collection not found'));
     }
 
-    environmentSchema
-      .validate(environment)
-      .then(() =>
-        dispatch(
-          _collectionAddEnvFileEvent({
-            environment,
-            collectionUid: meta.collectionUid
-          })
-        )
-      )
-      .then(resolve)
-      .catch(reject);
+    // Validate synchronously so the environment is in the store before any following event is handled
+    try {
+      environmentSchema.validateSync(environment);
+      dispatch(
+        _collectionAddEnvFileEvent({
+          environment,
+          collectionUid: meta.collectionUid
+        })
+      );
+      resolve(undefined);
+    } catch (error) {
+      reject(error);
+    }
   });
 };
 
@@ -2778,18 +2782,21 @@ export const importCollection = (collection: any, collectionLocation: any, optio
       const state = getState();
       const activeWorkspace = state.workspaces.workspaces.find((w: any) => w.uid === state.workspaces.activeWorkspaceUid);
 
-      const collectionPath = await ipcRenderer.invoke('renderer:import-collection', collection, collectionLocation, options.format || 'yml');
+      const result = await ipcRenderer.invoke('renderer:import-collection', collection, collectionLocation, options.format || 'yml') as {
+        success: { items: Array<{ name: string; path: string }> };
+      };
+      const importedItems = result.success.items;
 
       if (activeWorkspace && activeWorkspace.pathname && activeWorkspace.type !== 'default') {
-        const workspaceCollection = {
-          name: collection.name,
-          path: collectionPath
-        };
-
-        await ipcRenderer.invoke('renderer:add-collection-to-workspace', activeWorkspace.pathname, workspaceCollection);
+        for (const importedItem of importedItems) {
+          await ipcRenderer.invoke('renderer:add-collection-to-workspace', activeWorkspace.pathname, {
+            name: importedItem.name,
+            path: importedItem.path
+          });
+        }
       }
 
-      resolve(collectionPath);
+      resolve(Array.isArray(collection) ? importedItems.map((item) => item.path) : importedItems[0]?.path);
     } catch (error) {
       reject(error);
     }
